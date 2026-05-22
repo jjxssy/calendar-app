@@ -4,24 +4,49 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { CalendarDays, LogIn } from "lucide-react";
 import { FormEvent, useState } from "react";
-import { authRequest, saveSession } from "@/lib/api";
+import { saveSession, syncCurrentUser } from "@/lib/api";
+import { createClient } from "@/utils/supabase/client";
 
 export default function LoginPage() {
   const router = useRouter();
+  const [confirmed] = useState(
+    () =>
+      typeof window !== "undefined" &&
+      new URLSearchParams(window.location.search).get("confirmed") === "1",
+  );
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError("");
+    setSubmitting(true);
 
     try {
-      const session = await authRequest("/auth/login", { email, password });
-      saveSession(session);
+      const supabase = createClient();
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email,
+        password,
+      });
+
+      if (error || !data.user) throw error;
+
+      const { user } = await syncCurrentUser();
+      saveSession({
+        accessToken: data.session?.access_token,
+        user,
+      });
       router.replace("/");
-    } catch {
-      setError("Could not log in. Make sure the backend is running and the account exists.");
+    } catch (loginError) {
+      setError(
+        loginError instanceof Error
+          ? loginError.message
+          : "Could not log in. Check your email and password.",
+      );
+    } finally {
+      setSubmitting(false);
     }
   }
 
@@ -39,7 +64,7 @@ export default function LoginPage() {
             <CalendarDays size={22} />
           </span>
           <div>
-            <p className="text-sm font-bold text-[#8e8e93]">Luma Calendar</p>
+            <p className="text-sm font-bold text-[#8e8e93]">Arcgenda Calendar</p>
             <h1 className="text-3xl font-semibold tracking-normal">Log in</h1>
           </div>
         </div>
@@ -61,10 +86,18 @@ export default function LoginPage() {
             onChange={(event) => setPassword(event.target.value)}
             required
           />
+          {confirmed && (
+            <p className="text-sm font-semibold text-[#34c759]">
+              Email confirmed. You can log in now.
+            </p>
+          )}
           {error && <p className="text-sm font-semibold text-[#ff3b30]">{error}</p>}
-          <button className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-[#007aff] text-base font-bold text-white shadow-lg shadow-[#007aff]/25">
+          <button
+            disabled={submitting}
+            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-[#007aff] text-base font-bold text-white shadow-lg shadow-[#007aff]/25 disabled:opacity-60"
+          >
             <LogIn size={18} />
-            Log in
+            {submitting ? "Logging in..." : "Log in"}
           </button>
         </form>
 

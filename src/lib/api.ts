@@ -9,46 +9,63 @@ export type AppSession = {
   user: SessionUser;
 };
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000/api";
+const SESSION_STORAGE_KEY = "arcgenda-session";
+const LEGACY_SESSION_STORAGE_KEY = "luma-calendar-session";
+const DATA_STORAGE_PREFIX = "arcgenda-data";
+const LEGACY_DATA_STORAGE_PREFIX = "luma-calendar-data";
 
-export async function authRequest(
-  path: "/auth/login" | "/auth/register",
-  body: Record<string, string>,
-) {
-  const response = await fetch(`${API_URL}${path}`, {
+export async function syncCurrentUser() {
+  const response = await fetch("/api/users/me", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
   });
 
   if (!response.ok) {
     const message = await response.text();
-    throw new Error(message || "Authentication failed");
+    throw new Error(message || "Could not sync user profile");
   }
 
-  return (await response.json()) as AppSession;
+  return response.json() as Promise<{ user: SessionUser }>;
 }
 
 export function saveSession(session: AppSession) {
-  localStorage.setItem("luma-calendar-session", JSON.stringify(session));
+  localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(session));
+  localStorage.removeItem(LEGACY_SESSION_STORAGE_KEY);
 }
 
 export function readSession() {
-  const raw = localStorage.getItem("luma-calendar-session");
+  const raw = readSessionSnapshot();
   if (!raw) return null;
 
   try {
-    return JSON.parse(raw) as AppSession;
+    const session = JSON.parse(raw) as AppSession;
+    localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(session));
+    localStorage.removeItem(LEGACY_SESSION_STORAGE_KEY);
+    return session;
   } catch {
-    localStorage.removeItem("luma-calendar-session");
+    localStorage.removeItem(SESSION_STORAGE_KEY);
+    localStorage.removeItem(LEGACY_SESSION_STORAGE_KEY);
     return null;
   }
 }
 
+export function readSessionSnapshot() {
+  if (typeof window === "undefined") return null;
+
+  return (
+    localStorage.getItem(SESSION_STORAGE_KEY) ??
+    localStorage.getItem(LEGACY_SESSION_STORAGE_KEY)
+  );
+}
+
 export function clearSession() {
-  localStorage.removeItem("luma-calendar-session");
+  localStorage.removeItem(SESSION_STORAGE_KEY);
+  localStorage.removeItem(LEGACY_SESSION_STORAGE_KEY);
 }
 
 export function sessionStorageKey(session: AppSession) {
-  return `luma-calendar-data:${session.user.id ?? session.user.email}`;
+  return `${DATA_STORAGE_PREFIX}:${session.user.id ?? session.user.email}`;
+}
+
+export function legacySessionStorageKey(session: AppSession) {
+  return `${LEGACY_DATA_STORAGE_PREFIX}:${session.user.id ?? session.user.email}`;
 }

@@ -4,7 +4,8 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { CalendarDays, UserPlus } from "lucide-react";
 import { FormEvent, useState } from "react";
-import { authRequest, saveSession } from "@/lib/api";
+import { saveSession, syncCurrentUser } from "@/lib/api";
+import { createClient } from "@/utils/supabase/client";
 
 export default function SignupPage() {
   const router = useRouter();
@@ -12,17 +13,47 @@ export default function SignupPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
+  const [submitting, setSubmitting] = useState(false);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError("");
+    setMessage("");
+    setSubmitting(true);
 
     try {
-      const session = await authRequest("/auth/register", { name, email, password });
-      saveSession(session);
+      const supabase = createClient();
+      const { data, error } = await supabase.auth.signUp({
+        email,
+        password,
+        options: {
+          data: { name },
+          emailRedirectTo: `${window.location.origin}/login?confirmed=1`,
+        },
+      });
+
+      if (error || !data.user) throw error;
+
+      if (!data.session) {
+        setMessage("Account created. Check your email to confirm it, then log in.");
+        return;
+      }
+
+      const { user } = await syncCurrentUser();
+      saveSession({
+        accessToken: data.session.access_token,
+        user,
+      });
       router.replace("/");
-    } catch {
-      setError("Could not create account. Make sure the backend is running.");
+    } catch (signupError) {
+      setError(
+        signupError instanceof Error
+          ? signupError.message
+          : "Could not create account. Try another email or a stronger password.",
+      );
+    } finally {
+      setSubmitting(false);
     }
   }
 
@@ -40,7 +71,7 @@ export default function SignupPage() {
             <CalendarDays size={22} />
           </span>
           <div>
-            <p className="text-sm font-bold text-[#8e8e93]">Luma Calendar</p>
+            <p className="text-sm font-bold text-[#8e8e93]">Arcgenda Calendar</p>
             <h1 className="text-3xl font-semibold tracking-normal">Sign up</h1>
           </div>
         </div>
@@ -69,10 +100,14 @@ export default function SignupPage() {
             onChange={(event) => setPassword(event.target.value)}
             required
           />
+          {message && <p className="text-sm font-semibold text-[#34c759]">{message}</p>}
           {error && <p className="text-sm font-semibold text-[#ff3b30]">{error}</p>}
-          <button className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-[#007aff] text-base font-bold text-white shadow-lg shadow-[#007aff]/25">
+          <button
+            disabled={submitting}
+            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-[#007aff] text-base font-bold text-white shadow-lg shadow-[#007aff]/25 disabled:opacity-60"
+          >
             <UserPlus size={18} />
-            Create account
+            {submitting ? "Creating..." : "Create account"}
           </button>
         </form>
 

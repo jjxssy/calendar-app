@@ -1,4 +1,4 @@
-const CACHE_NAME = "calendar-pwa-v1";
+const CACHE_NAME = "arcgenda-calendar-v2";
 const APP_SHELL = ["/", "/manifest.webmanifest", "/icons/icon.svg"];
 
 self.addEventListener("install", function (event) {
@@ -33,6 +33,28 @@ self.addEventListener("activate", function (event) {
 
 self.addEventListener("fetch", function (event) {
   if (event.request.method !== "GET") {
+    return;
+  }
+
+  const requestUrl = new URL(event.request.url);
+  if (requestUrl.pathname.startsWith("/_next/")) {
+    return;
+  }
+
+  if (event.request.mode === "navigate") {
+    event.respondWith(
+      fetch(event.request)
+        .then(function (response) {
+          const responseToCache = response.clone();
+          caches.open(CACHE_NAME).then(function (cache) {
+            cache.put("/", responseToCache);
+          });
+          return response;
+        })
+        .catch(function () {
+          return caches.match("/");
+        }),
+    );
     return;
   }
 

@@ -51,6 +51,7 @@ model User {
   habits       Habit[]
   birthdays    Birthday[]
   reminders    Reminder[]
+  tasks        Task[]
 }
 
 model Category {
@@ -96,28 +97,32 @@ model Event {
 
   user        User                @relation(fields: [userId], references: [id], onDelete: Cascade)
   category    Category?           @relation(fields: [categoryId], references: [id], onDelete: SetNull)
-  tasks       EventTask[]
+  tasks       Task[]
   reminders   Reminder[]          @relation("EventReminders")
   rescheduleReminders Reminder[]   @relation("RescheduleReminderForEvent")
-  rescheduleTasks EventTask[]      @relation("RescheduleTaskForEvent")
+  rescheduleTasks Task[]           @relation("RescheduleTaskForEvent")
 
   @@index([userId, startsAt])
   @@index([userId, archivedAt, deletedAt])
 }
 
-model EventTask {
+model Task {
   id        String   @id @default(cuid())
-  eventId   String
+  userId    String
+  eventId   String?
   linkedCancelledEventId String?
   title     String
   done      Boolean  @default(false)
+  reminderAt DateTime?
   sortOrder Int      @default(0)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  event     Event    @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  event     Event?   @relation(fields: [eventId], references: [id], onDelete: SetNull)
   linkedCancelledEvent Event? @relation("RescheduleTaskForEvent", fields: [linkedCancelledEventId], references: [id], onDelete: SetNull)
 
+  @@index([userId])
   @@index([eventId])
   @@index([linkedCancelledEventId])
 }

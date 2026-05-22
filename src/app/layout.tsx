@@ -13,13 +13,13 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Calendar",
+  title: "Arcgenda Calendar",
   description: "A fast iPhone-style calendar PWA built with Next.js.",
-  applicationName: "Calendar",
+  applicationName: "Arcgenda Calendar",
   manifest: "/manifest.webmanifest",
   appleWebApp: {
     capable: true,
-    title: "Calendar",
+    title: "Arcgenda Calendar",
     statusBarStyle: "default",
   },
   formatDetection: {

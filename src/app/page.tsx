@@ -21,13 +21,23 @@ import {
   X,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import {
+  FormEvent,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import {
   AppSession,
   clearSession,
+  legacySessionStorageKey,
   readSession,
+  readSessionSnapshot,
   sessionStorageKey,
 } from "@/lib/api";
+import { createClient } from "@/utils/supabase/client";
 import {
   CalendarView,
   addDays,
@@ -84,7 +94,7 @@ type StandaloneTask = {
   done: boolean;
   reminderDate: string;
   reminderTime: string;
-  eventId: string;
+  eventId: string | null;
   eventTitle: string;
 };
 
@@ -93,6 +103,15 @@ type TaskDraft = {
   reminderDate: string;
   reminderTime: string;
   eventId: string;
+};
+
+type TaskListItem = {
+  id: string;
+  title: string;
+  done: boolean;
+  eventId: string | null;
+  eventTitle: string;
+  eventStatus?: CalendarEvent["status"];
 };
 
 type CalendarData = {
@@ -144,11 +163,23 @@ function readCalendarData(session: AppSession | null, today: Date): CalendarData
 
   if (!session || typeof window === "undefined") return fallback;
 
-  const raw = localStorage.getItem(sessionStorageKey(session));
+  const key = sessionStorageKey(session);
+  const legacyKey = legacySessionStorageKey(session);
+  const raw = localStorage.getItem(key) ?? localStorage.getItem(legacyKey);
   if (!raw) return fallback;
 
   try {
-    return { ...fallback, ...JSON.parse(raw) };
+    const parsed = { ...fallback, ...JSON.parse(raw) } as CalendarData;
+    const data = {
+      ...parsed,
+      standaloneTasks: parsed.standaloneTasks.map((task) => ({
+        ...task,
+        eventId: task.eventId === "none" ? null : task.eventId,
+      })),
+    };
+    localStorage.setItem(key, JSON.stringify(data));
+    localStorage.removeItem(legacyKey);
+    return data;
   } catch {
     return fallback;
   }
@@ -194,14 +225,25 @@ function hourFromTime(time: string) {
   return Number.isFinite(hour) ? hour : 8;
 }
 
+function subscribeSessionStorage(onStoreChange: () => void) {
+  window.addEventListener("storage", onStoreChange);
+  return () => window.removeEventListener("storage", onStoreChange);
+}
+
 export default function Home() {
   const router = useRouter();
   const today = useMemo(() => new Date(), []);
   const firedAlerts = useRef<Set<string>>(new Set());
-  const session = useMemo(
-    () => (typeof window !== "undefined" ? readSession() : null),
-    [],
+  const sessionSnapshot = useSyncExternalStore(
+    subscribeSessionStorage,
+    readSessionSnapshot,
+    () => "__server__",
   );
+  const session = useMemo(
+    () => (sessionSnapshot && sessionSnapshot !== "__server__" ? readSession() : null),
+    [sessionSnapshot],
+  );
+  const authChecked = sessionSnapshot !== "__server__";
   const isAuthed = Boolean(session);
   const initialData = useMemo(() => readCalendarData(session, today), [session, today]);
   const [visibleMonth, setVisibleMonth] = useState(startOfMonth(today));
@@ -233,6 +275,7 @@ export default function Home() {
     reminderTime: currentTimeValue(today),
     eventId: "none",
   });
+  const [eventTaskDrafts, setEventTaskDrafts] = useState<Record<string, string>>({});
   const [composerOpen, setComposerOpen] = useState(false);
   const [tagModalOpen, setTagModalOpen] = useState(false);
   const [tagDraft, setTagDraft] = useState<TagDraft>({
@@ -281,16 +324,17 @@ export default function Home() {
     .sort((a, b) => a.time.localeCompare(b.time));
   const weekDays = getWeekDays(selectedDate);
   const taskItems = useMemo(
-    () =>
-      events
-        .flatMap((event) =>
-          event.tasks.map((task) => ({
-            ...task,
-            eventId: event.id,
-            eventTitle: event.title,
-          })),
-        )
-        .concat(standaloneTasks),
+    (): TaskListItem[] => [
+      ...events.flatMap((event) =>
+        event.tasks.map((task) => ({
+          ...task,
+          eventId: event.id,
+          eventTitle: event.title,
+          eventStatus: event.status,
+        })),
+      ),
+      ...standaloneTasks,
+    ],
     [events, standaloneTasks],
   );
   const alertItems = useMemo(
@@ -303,7 +347,7 @@ export default function Home() {
             .filter((task) => !task.done)
             .map((task) => ({
               id: `task-alert-${task.id}`,
-              eventId: task.eventId,
+              eventId: task.eventId ?? "none",
               title: `Task reminder: ${task.title}`,
               date: task.reminderDate,
               time: task.reminderTime,
@@ -314,15 +358,15 @@ export default function Home() {
     [eventReminders, events, standaloneTasks],
   );
   const unboundUndoneTasks = useMemo(
-    () => standaloneTasks.filter((task) => !task.done && task.eventId === "none"),
+    () => standaloneTasks.filter((task) => !task.done && !task.eventId),
     [standaloneTasks],
   );
 
   useEffect(() => {
-    if (!isAuthed) {
+    if (authChecked && !session) {
       router.replace("/login");
     }
-  }, [isAuthed, router]);
+  }, [authChecked, router, session]);
 
   useEffect(() => {
     if (!session) return;
@@ -343,7 +387,7 @@ export default function Home() {
         if (due <= now && !firedAlerts.current.has(item.id)) {
           firedAlerts.current.add(item.id);
           if ("Notification" in window && Notification.permission === "granted") {
-            new Notification("Luma Calendar", { body: item.title });
+            new Notification("Arcgenda Calendar", { body: item.title });
           } else {
             window.alert(item.title);
           }
@@ -356,8 +400,17 @@ export default function Home() {
     return () => window.clearInterval(interval);
   }, [alertItems, isAuthed]);
 
-  if (!isAuthed) {
-    return null;
+  if (!authChecked || !isAuthed) {
+    return (
+      <main className="grid min-h-dvh place-items-center bg-[#f6f4ff] px-5 text-[#18181b]">
+        <section className="rounded-[32px] border border-white/70 bg-white/80 p-6 text-center shadow-2xl shadow-[#6d5dfc]/15 backdrop-blur-3xl">
+          <p className="text-sm font-bold text-[#8e8e93]">Arcgenda Calendar</p>
+          <h1 className="mt-1 text-2xl font-semibold tracking-normal">
+            Opening your calendar
+          </h1>
+        </section>
+      </main>
+    );
   }
 
   function tagFor(event: CalendarEvent) {
@@ -439,7 +492,7 @@ export default function Home() {
           done: false,
           reminderDate: taskDraft.reminderDate,
           reminderTime: taskDraft.reminderTime,
-          eventId: "none",
+          eventId: null,
           eventTitle: "Standalone task",
         },
         ...current,
@@ -591,6 +644,93 @@ export default function Home() {
     setRescheduleTarget(null);
   }
 
+  function toggleTask(taskId: string) {
+    setEvents((current) =>
+      current.map((event) => ({
+        ...event,
+        tasks: event.tasks.map((task) =>
+          task.id === taskId ? { ...task, done: !task.done } : task,
+        ),
+      })),
+    );
+    setStandaloneTasks((current) =>
+      current.map((task) => (task.id === taskId ? { ...task, done: !task.done } : task)),
+    );
+  }
+
+  function createTaskForEvent(eventId: string) {
+    const title = eventTaskDrafts[eventId]?.trim();
+    if (!title) return;
+
+    setEvents((current) =>
+      current.map((event) =>
+        event.id === eventId
+          ? {
+              ...event,
+              tasks: [...event.tasks, { id: createId(), title, done: false }],
+            }
+          : event,
+      ),
+    );
+    setEventTaskDrafts((current) => ({ ...current, [eventId]: "" }));
+  }
+
+  function linkTaskToEvent(eventId: string, taskId: string) {
+    const taskToLink = standaloneTasks.find((task) => task.id === taskId);
+    if (!taskToLink) return;
+
+    setEvents((current) =>
+      current.map((event) =>
+        event.id === eventId
+          ? {
+              ...event,
+              tasks: [
+                ...event.tasks,
+                { id: taskToLink.id, title: taskToLink.title, done: taskToLink.done },
+              ],
+            }
+          : event,
+      ),
+    );
+    setStandaloneTasks((current) => current.filter((task) => task.id !== taskId));
+  }
+
+  function unlinkTaskFromEvent(eventId: string, taskId: string) {
+    const sourceEvent = events.find((event) => event.id === eventId);
+    const taskToUnlink = sourceEvent?.tasks.find((task) => task.id === taskId);
+    if (!taskToUnlink) return;
+
+    setEvents((current) =>
+      current.map((event) =>
+        event.id === eventId
+          ? { ...event, tasks: event.tasks.filter((task) => task.id !== taskId) }
+          : event,
+      ),
+    );
+    setStandaloneTasks((current) => [
+      {
+        id: taskToUnlink.id,
+        title: taskToUnlink.title,
+        done: taskToUnlink.done,
+        reminderDate: selectedKey,
+        reminderTime: currentTimeValue(),
+        eventId: null,
+        eventTitle: "Standalone task",
+      },
+      ...current,
+    ]);
+  }
+
+  function deleteTask(taskId: string) {
+    setEvents((current) =>
+      current.map((event) => ({
+        ...event,
+        tasks: event.tasks.filter((task) => task.id !== taskId),
+      })),
+    );
+    setStandaloneTasks((current) => current.filter((task) => task.id !== taskId));
+  }
+
   function createTag(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const label = tagDraft.label.trim();
@@ -628,11 +768,12 @@ export default function Home() {
             setQuery={setQuery}
             onAdd={openNewEvent}
             onLogout={() => {
+              void createClient().auth.signOut();
               clearSession();
               router.replace("/login");
             }}
           />
-          <section className="min-h-0 flex-1 scroll-pb-40 overflow-y-auto px-5 pb-[calc(env(safe-area-inset-bottom)+176px)] pt-5 lg:pb-10">
+          <section className="min-h-0 flex-1 scroll-pb-40 overflow-y-auto px-5 pb-[calc(env(safe-area-inset-bottom)+176px)] pt-5 lg:pb-6 lg:scroll-pb-6">
             {activeTab === "calendar" && (
               <>
                 <ViewSwitcher view={view} setView={setView} />
@@ -686,22 +827,22 @@ export default function Home() {
                   }}
                   onDelete={deleteEvent}
                   onUndoCancel={undoCancelEvent}
+                  unboundTasks={unboundUndoneTasks}
+                  taskDrafts={eventTaskDrafts}
+                  setTaskDrafts={setEventTaskDrafts}
+                  onCreateTask={createTaskForEvent}
+                  onLinkTask={linkTaskToEvent}
+                  onToggleTask={toggleTask}
+                  onUnlinkTask={unlinkTaskFromEvent}
+                  onDeleteTask={deleteTask}
                 />
               </>
             )}
             {activeTab === "tasks" && (
               <TasksTab
                 tasks={taskItems}
-                onToggle={(taskId) =>
-                  setEvents((current) =>
-                    current.map((event) => ({
-                      ...event,
-                      tasks: event.tasks.map((task) =>
-                        task.id === taskId ? { ...task, done: !task.done } : task,
-                      ),
-                    })),
-                  )
-                }
+                onToggle={toggleTask}
+                onDelete={deleteTask}
               />
             )}
             {activeTab === "alerts" && <AlertsTab alerts={alertItems} />}
@@ -790,7 +931,7 @@ function Header({
       <div className="flex items-center justify-between">
         <div>
           <p className="text-sm font-semibold text-[#7c7c8a]">{formatLongDate(today)}</p>
-          <h1 className="text-3xl font-semibold tracking-normal">Luma Calendar</h1>
+          <h1 className="text-3xl font-semibold tracking-normal">Arcgenda Calendar</h1>
         </div>
         <button
           className="grid size-11 place-items-center rounded-full bg-[#1d1d1f] text-white shadow-lg shadow-black/20 transition active:scale-95"
@@ -1092,6 +1233,14 @@ function Agenda({
   onCancel,
   onDelete,
   onUndoCancel,
+  unboundTasks,
+  taskDrafts,
+  setTaskDrafts,
+  onCreateTask,
+  onLinkTask,
+  onToggleTask,
+  onUnlinkTask,
+  onDeleteTask,
 }: {
   selectedDate: Date;
   events: CalendarEvent[];
@@ -1101,6 +1250,14 @@ function Agenda({
   onCancel: (event: CalendarEvent) => void;
   onDelete: (id: string) => void;
   onUndoCancel: (id: string) => void;
+  unboundTasks: StandaloneTask[];
+  taskDrafts: Record<string, string>;
+  setTaskDrafts: (drafts: Record<string, string>) => void;
+  onCreateTask: (eventId: string) => void;
+  onLinkTask: (eventId: string, taskId: string) => void;
+  onToggleTask: (taskId: string) => void;
+  onUnlinkTask: (eventId: string, taskId: string) => void;
+  onDeleteTask: (taskId: string) => void;
 }) {
   return (
     <section className="mt-6">
@@ -1126,6 +1283,14 @@ function Agenda({
               onCancel={() => onCancel(event)}
               onDelete={() => onDelete(event.id)}
               onUndoCancel={() => onUndoCancel(event.id)}
+              unboundTasks={unboundTasks}
+              taskDraft={taskDrafts[event.id] ?? ""}
+              onTaskDraftChange={(value) => setTaskDrafts({ ...taskDrafts, [event.id]: value })}
+              onCreateTask={() => onCreateTask(event.id)}
+              onLinkTask={(taskId) => onLinkTask(event.id, taskId)}
+              onToggleTask={onToggleTask}
+              onUnlinkTask={(taskId) => onUnlinkTask(event.id, taskId)}
+              onDeleteTask={onDeleteTask}
             />
           ))
         )}
@@ -1144,6 +1309,14 @@ function EventCard({
   onCancel,
   onDelete,
   onUndoCancel,
+  unboundTasks,
+  taskDraft,
+  onTaskDraftChange,
+  onCreateTask,
+  onLinkTask,
+  onToggleTask,
+  onUnlinkTask,
+  onDeleteTask,
 }: {
   event: CalendarEvent;
   tag: CategoryStyle;
@@ -1151,6 +1324,14 @@ function EventCard({
   onCancel: () => void;
   onDelete: () => void;
   onUndoCancel: () => void;
+  unboundTasks: StandaloneTask[];
+  taskDraft: string;
+  onTaskDraftChange: (value: string) => void;
+  onCreateTask: () => void;
+  onLinkTask: (taskId: string) => void;
+  onToggleTask: (taskId: string) => void;
+  onUnlinkTask: (taskId: string) => void;
+  onDeleteTask: (taskId: string) => void;
 }) {
   const doneTasks = event.tasks.filter((task) => task.done).length;
   const cancelled = event.status === "cancelled";
@@ -1214,6 +1395,97 @@ function EventCard({
             {event.tasks.length > 0 && <Chip icon={<Check size={14} />} text={`${doneTasks}/${event.tasks.length}`} />}
             {event.rescheduleReminders.length > 0 && <Chip icon={<RotateCcw size={14} />} text={`${event.rescheduleReminders.length} reschedule`} />}
           </div>
+          <div className="mt-4 rounded-3xl bg-white/55 p-3 backdrop-blur">
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <p className="text-sm font-bold text-[#636366]">Linked tasks</p>
+              {cancelled && (
+                <span className="rounded-full bg-[#ffe8e6] px-2 py-0.5 text-[11px] font-bold text-[#c82d21]">
+                  Event cancelled
+                </span>
+              )}
+            </div>
+            {event.tasks.length === 0 ? (
+              <p className="text-sm font-semibold text-[#8e8e93]">No linked tasks yet.</p>
+            ) : (
+              <div className="space-y-2">
+                {event.tasks.map((task) => (
+                  <div
+                    key={task.id}
+                    className="grid grid-cols-[auto_1fr_auto] items-center gap-2 rounded-2xl bg-white/70 px-3 py-2"
+                  >
+                    <button
+                      type="button"
+                      onClick={() => onToggleTask(task.id)}
+                      className={[
+                        "grid size-7 place-items-center rounded-full transition active:scale-95",
+                        task.done ? "bg-[#34c759] text-white" : "bg-[#f2f2f7] text-transparent",
+                      ].join(" ")}
+                      aria-label={`Toggle ${task.title}`}
+                    >
+                      <Check size={14} />
+                    </button>
+                    <div className="min-w-0">
+                      <p
+                        className={[
+                          "truncate text-sm font-semibold",
+                          task.done ? "line-through text-[#8e8e93]" : "",
+                        ].join(" ")}
+                      >
+                        {task.title}
+                      </p>
+                      {cancelled && (
+                        <p className="truncate text-xs font-bold text-[#c82d21]">
+                          Linked event is cancelled
+                        </p>
+                      )}
+                    </div>
+                    <div className="flex gap-1">
+                      <IconButton label={`Unlink ${task.title}`} onClick={() => onUnlinkTask(task.id)}>
+                        <X size={14} />
+                      </IconButton>
+                      <IconButton label={`Delete ${task.title}`} onClick={() => onDeleteTask(task.id)} danger>
+                        <Trash2 size={14} />
+                      </IconButton>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div className="mt-3 grid grid-cols-[1fr_auto] gap-2">
+              <input
+                value={taskDraft}
+                onChange={(inputEvent) => onTaskDraftChange(inputEvent.target.value)}
+                className="h-10 min-w-0 rounded-2xl bg-white/75 px-3 text-sm font-semibold outline-none placeholder:text-[#9b9baa]"
+                placeholder="New task for this event"
+              />
+              <button
+                type="button"
+                onClick={onCreateTask}
+                className="h-10 rounded-2xl bg-[#007aff] px-4 text-sm font-bold text-white transition active:scale-95"
+              >
+                Add
+              </button>
+            </div>
+            {unboundTasks.length > 0 && (
+              <select
+                value=""
+                onChange={(selectEvent) => {
+                  if (selectEvent.target.value) {
+                    onLinkTask(selectEvent.target.value);
+                  }
+                }}
+                className="mt-2 h-10 w-full rounded-2xl bg-white/75 px-3 text-sm font-semibold outline-none"
+                aria-label={`Link an existing task to ${event.title}`}
+              >
+                <option value="">Link existing task</option>
+                {unboundTasks.map((task) => (
+                  <option key={task.id} value={task.id}>
+                    {task.title}
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
         </div>
       </div>
     </article>
@@ -1223,30 +1495,42 @@ function EventCard({
 function TasksTab({
   tasks,
   onToggle,
+  onDelete,
 }: {
-  tasks: Array<{ id: string; title: string; done: boolean; eventTitle: string }>;
+  tasks: TaskListItem[];
   onToggle: (taskId: string) => void;
+  onDelete: (taskId: string) => void;
 }) {
   return (
     <section>
       <SectionTitle eyebrow="Tasks" title="Checklist" count={tasks.length} />
       <div className="space-y-3">
         {tasks.map((task) => (
-          <button
+          <article
             key={task.id}
-            onClick={() => onToggle(task.id)}
             className="flex w-full items-center gap-3 rounded-[24px] border border-white/60 bg-white/70 p-4 text-left shadow-lg shadow-black/5 backdrop-blur-xl"
           >
-            <span className={["grid size-8 place-items-center rounded-full", task.done ? "bg-[#34c759] text-white" : "bg-[#f2f2f7] text-transparent"].join(" ")}>
+            <button
+              type="button"
+              onClick={() => onToggle(task.id)}
+              className={["grid size-8 place-items-center rounded-full", task.done ? "bg-[#34c759] text-white" : "bg-[#f2f2f7] text-transparent"].join(" ")}
+              aria-label={`Toggle ${task.title}`}
+            >
               <Check size={16} />
-            </span>
-            <span className="min-w-0">
+            </button>
+            <span className="min-w-0 flex-1">
               <span className={["block truncate text-base font-semibold", task.done ? "line-through text-[#8e8e93]" : ""].join(" ")}>
                 {task.title}
               </span>
-              <span className="block truncate text-sm font-semibold text-[#8e8e93]">{task.eventTitle}</span>
+              <span className="block truncate text-sm font-semibold text-[#8e8e93]">
+                {task.eventTitle}
+                {task.eventStatus === "cancelled" ? " · event cancelled" : ""}
+              </span>
             </span>
-          </button>
+            <IconButton label={`Delete ${task.title}`} onClick={() => onDelete(task.id)} danger>
+              <Trash2 size={15} />
+            </IconButton>
+          </article>
         ))}
       </div>
     </section>
@@ -1639,7 +1923,7 @@ function DesktopPanel({
           <Stat label="Alerts" value={alerts.length + reminders.length} />
         </div>
       </section>
-      <section className="overflow-y-auto rounded-[36px] border border-white/55 bg-white/58 p-6 shadow-2xl shadow-[#6d5dfc]/10 backdrop-blur-3xl">
+      <section className="overflow-y-auto rounded-[36px] border border-white/55 bg-white/58 p-6 pb-10 shadow-2xl shadow-[#6d5dfc]/10 backdrop-blur-3xl">
         <SectionTitle eyebrow="Planner" title="Today at a glance" count={events.length} />
         <div className="grid grid-cols-2 gap-4">
           {events.map((event) => (
@@ -1678,7 +1962,7 @@ function BottomTabs({
     { id: "alerts" as const, label: "Alerts", icon: Bell },
   ];
   return (
-    <nav className="fixed inset-x-0 bottom-0 z-30 mx-auto max-w-md border-t border-white/50 bg-white/58 px-5 pb-[calc(env(safe-area-inset-bottom)+8px)] pt-2 backdrop-blur-2xl lg:absolute lg:rounded-b-[36px]">
+    <nav className="fixed inset-x-0 bottom-0 z-30 mx-auto max-w-md border-t border-white/50 bg-white/58 px-5 pb-[calc(env(safe-area-inset-bottom)+8px)] pt-2 backdrop-blur-2xl lg:static lg:mx-0 lg:max-w-none lg:shrink-0 lg:rounded-b-[36px] lg:px-5 lg:pb-3">
       <div className="grid grid-cols-3 text-[11px] font-bold">
         {items.map((item) => (
           <button

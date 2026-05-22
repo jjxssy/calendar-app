@@ -3,6 +3,7 @@
 # dependencies
 /node_modules
 /backend/node_modules
+/.npm
 /.pnp
 .pnp.*
 .yarn/*
@@ -25,6 +26,7 @@
 
 # misc
 .DS_Store
+Thumbs.db
 *.pem
 *.local
 
@@ -34,6 +36,7 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 backend/npm-debug.log*
+.next-dev.*.log
 
 # env files (can opt-in for committing if needed)
 .env*
@@ -52,3 +55,5 @@ backend/npm-debug.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+/src/generated/prisma

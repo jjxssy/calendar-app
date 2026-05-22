@@ -1,6 +1,6 @@
 {
-  "name": "Calendar",
-  "short_name": "Calendar",
+  "name": "Arcgenda Calendar",
+  "short_name": "Arcgenda Calendar",
   "description": "A fast iPhone-style calendar app.",
   "start_url": "/",
   "scope": "/",

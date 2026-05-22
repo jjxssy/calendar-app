@@ -139,8 +139,9 @@ export class EventsService {
           },
         });
 
-        await tx.eventTask.create({
+        await tx.task.create({
           data: {
+            userId,
             eventId: event.id,
             linkedCancelledEventId: event.id,
             title,
