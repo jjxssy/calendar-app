@@ -2,10 +2,11 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { CalendarDays, LogIn } from "lucide-react";
+import { LogIn } from "lucide-react";
 import { FormEvent, useState } from "react";
 import { saveSession, syncCurrentUser } from "@/lib/api";
 import { createClient } from "@/utils/supabase/client";
+import { BrandMark } from "@/components/brand/brand-mark";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -38,7 +39,7 @@ export default function LoginPage() {
         accessToken: data.session?.access_token,
         user,
       });
-      router.replace("/");
+      router.replace("/calendar");
     } catch (loginError) {
       setError(
         loginError instanceof Error
@@ -60,11 +61,9 @@ export default function LoginPage() {
 
       <section className="relative w-full max-w-md rounded-[36px] border border-white/70 bg-white/76 p-6 shadow-2xl shadow-[#6d5dfc]/15 backdrop-blur-3xl">
         <div className="mb-6 flex items-center gap-3">
-          <span className="grid size-12 place-items-center rounded-full bg-[#e5f1ff] text-[#007aff]">
-            <CalendarDays size={22} />
-          </span>
+          <BrandMark size="md" />
           <div>
-            <p className="text-sm font-bold text-[#8e8e93]">Arcgenda Calendar</p>
+            <p className="text-sm font-bold text-[#8e8e93]">Arcgenda</p>
             <h1 className="text-3xl font-semibold tracking-normal">Log in</h1>
           </div>
         </div>

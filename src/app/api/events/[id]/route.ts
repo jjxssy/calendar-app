@@ -1,4 +1,4 @@
-import { ApiError, booleanValue, dateValue, ensureCategory, ensureEvent, fail, ok, readBody, requireUser, stringValue } from "@/lib/api-helpers";
+import { ApiError, booleanValue, dateValue, ensureCategory, ensureEditableEvent, ensureWritableCalendar, fail, ok, readBody, requireUser, stringValue } from "@/lib/api-helpers";
 import { prisma } from "@/lib/prisma";
 
 const priorities = ["low", "normal", "high", "urgent"] as const;
@@ -26,27 +26,65 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
     const { id } = await context.params;
     const body = await readBody(request);
     const categoryId = body.categoryId === null ? null : stringValue(body.categoryId);
+    const calendarId = body.calendarId === null ? null : stringValue(body.calendarId);
 
-    await ensureEvent(user.id, id);
+    const existing = await ensureEditableEvent(user.id, id);
     if (categoryId) await ensureCategory(user.id, categoryId);
+    if (calendarId) await ensureWritableCalendar(user.id, calendarId);
 
-    const event = await prisma.event.update({
-      where: { id },
-      data: {
-        categoryId,
-        title: stringValue(body.title),
-        description: stringValue(body.description),
-        startDate: dateValue(body.startDate, "startDate"),
-        endDate: dateValue(body.endDate, "endDate"),
-        allDay: booleanValue(body.allDay),
-        color: stringValue(body.color),
-        location: stringValue(body.location),
-        url: stringValue(body.url),
-        priority: priorityValue(body.priority),
-        pinned: booleanValue(body.pinned),
-        status: statusValue(body.status),
-      },
-      include: { category: true, tasks: true, reminders: true },
+    const event = await prisma.$transaction(async (tx) => {
+      const updated = await tx.event.update({
+        where: { id },
+        data: {
+          calendarId,
+          categoryId,
+          updatedById: user.id,
+          title: stringValue(body.title),
+          description: stringValue(body.description),
+          startDate: dateValue(body.startDate, "startDate"),
+          endDate: dateValue(body.endDate, "endDate"),
+          allDay: booleanValue(body.allDay),
+          color: stringValue(body.color),
+          location: stringValue(body.location),
+          url: stringValue(body.url),
+          priority: priorityValue(body.priority),
+          pinned: booleanValue(body.pinned),
+          status: statusValue(body.status),
+        },
+        include: { calendar: true, category: true, tasks: true, reminders: true, shares: true },
+      });
+      const moved = existing.calendarId !== updated.calendarId;
+      if (moved) {
+        const calendars = await tx.calendar.findMany({
+          where: { id: { in: [existing.calendarId, updated.calendarId].filter(Boolean) as string[] } },
+          select: { id: true, name: true },
+        });
+        const oldName =
+          calendars.find((calendar) => calendar.id === existing.calendarId)?.name ?? "No calendar";
+        const newName =
+          calendars.find((calendar) => calendar.id === updated.calendarId)?.name ?? "No calendar";
+        await tx.activityHistory.create({
+          data: {
+            calendarId: updated.calendarId,
+            eventId: id,
+            userId: user.id,
+            action: "event.moved",
+            details: `${user.name ?? user.email} moved event from ${oldName} to ${newName}.`,
+          },
+        });
+      }
+
+      await tx.activityHistory.create({
+        data: {
+          calendarId: updated.calendarId,
+          eventId: id,
+          userId: user.id,
+          action: "event.updated",
+          details: `Updated "${updated.title}"`,
+        },
+      });
+
+      return updated;
     });
 
     return ok({ event });
@@ -59,11 +97,25 @@ export async function DELETE(_request: Request, context: { params: Promise<{ id:
   try {
     const user = await requireUser();
     const { id } = await context.params;
-    await ensureEvent(user.id, id);
+    await ensureEditableEvent(user.id, id);
 
-    const event = await prisma.event.update({
-      where: { id },
-      data: { status: "archived", archivedAt: new Date() },
+    const event = await prisma.$transaction(async (tx) => {
+      const archived = await tx.event.update({
+        where: { id },
+        data: { status: "archived", archivedAt: new Date(), updatedById: user.id },
+      });
+
+      await tx.activityHistory.create({
+        data: {
+          calendarId: archived.calendarId,
+          eventId: id,
+          userId: user.id,
+          action: "event.archived",
+          details: `Archived "${archived.title}"`,
+        },
+      });
+
+      return archived;
     });
 
     return ok({ event });

@@ -1,4 +1,4 @@
-import { ApiError, booleanValue, dateValue, ensureCategory, fail, ok, readBody, requireUser, stringValue } from "@/lib/api-helpers";
+import { ApiError, booleanValue, dateValue, ensureCategory, ensureWritableCalendar, fail, ok, readBody, requireUser, stringValue } from "@/lib/api-helpers";
 import { prisma } from "@/lib/prisma";
 
 const priorities = ["low", "normal", "high", "urgent"] as const;
@@ -29,7 +29,24 @@ export async function GET(request: Request) {
 
     const events = await prisma.event.findMany({
       where: {
-        userId: user.id,
+        AND: [
+          {
+            OR: [
+              { userId: user.id },
+              { calendar: { members: { some: { userId: user.id, status: "accepted" } } } },
+              { shares: { some: { userId: user.id, status: "accepted" } } },
+            ],
+          },
+          {
+            OR: q
+              ? [
+                  { title: { contains: q, mode: "insensitive" } },
+                  { description: { contains: q, mode: "insensitive" } },
+                  { location: { contains: q, mode: "insensitive" } },
+                ]
+              : undefined,
+          },
+        ],
         archivedAt: includeArchived ? undefined : null,
         status: statusValue(url.searchParams.get("status") ?? undefined),
         categoryId: url.searchParams.get("categoryId") ?? undefined,
@@ -37,15 +54,8 @@ export async function GET(request: Request) {
           gte: dateValue(url.searchParams.get("from") ?? undefined, "from"),
           lte: dateValue(url.searchParams.get("to") ?? undefined, "to"),
         },
-        OR: q
-          ? [
-              { title: { contains: q, mode: "insensitive" } },
-              { description: { contains: q, mode: "insensitive" } },
-              { location: { contains: q, mode: "insensitive" } },
-            ]
-          : undefined,
       },
-      include: { category: true, tasks: true, reminders: true },
+      include: { calendar: true, category: true, tasks: true, reminders: true, shares: true },
       orderBy: [{ pinned: "desc" }, { startDate: "asc" }],
     });
 
@@ -62,27 +72,46 @@ export async function POST(request: Request) {
     const title = stringValue(body.title);
     const startDate = dateValue(body.startDate, "startDate");
     const categoryId = stringValue(body.categoryId);
+    const calendarId = stringValue(body.calendarId);
 
     if (!title) throw new ApiError("title is required.");
     if (!startDate) throw new ApiError("startDate is required.");
     if (categoryId) await ensureCategory(user.id, categoryId);
+    if (calendarId) await ensureWritableCalendar(user.id, calendarId);
 
-    const event = await prisma.event.create({
-      data: {
-        userId: user.id,
-        categoryId,
-        title,
-        description: stringValue(body.description),
-        startDate,
-        endDate: dateValue(body.endDate, "endDate"),
-        allDay: booleanValue(body.allDay) ?? false,
-        color: stringValue(body.color),
-        location: stringValue(body.location),
-        url: stringValue(body.url),
-        priority: priorityValue(body.priority) ?? "normal",
-        pinned: booleanValue(body.pinned) ?? false,
-      },
-      include: { category: true, tasks: true, reminders: true },
+    const event = await prisma.$transaction(async (tx) => {
+      const created = await tx.event.create({
+        data: {
+          userId: user.id,
+          calendarId,
+          categoryId,
+          createdById: user.id,
+          updatedById: user.id,
+          title,
+          description: stringValue(body.description),
+          startDate,
+          endDate: dateValue(body.endDate, "endDate"),
+          allDay: booleanValue(body.allDay) ?? false,
+          color: stringValue(body.color),
+          location: stringValue(body.location),
+          url: stringValue(body.url),
+          priority: priorityValue(body.priority) ?? "normal",
+          pinned: booleanValue(body.pinned) ?? false,
+        },
+        include: { calendar: true, category: true, tasks: true, reminders: true, shares: true },
+      });
+
+      await tx.activityHistory.create({
+        data: {
+          calendarId,
+          eventId: created.id,
+          userId: user.id,
+          action: "event.created",
+          details: `Created "${created.title}"`,
+        },
+      });
+
+      return created;
     });
 
     return ok({ event }, 201);

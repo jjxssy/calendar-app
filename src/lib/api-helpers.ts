@@ -40,6 +40,13 @@ export function booleanValue(value: unknown) {
   return typeof value === "boolean" ? value : undefined;
 }
 
+export function numberValue(value: unknown, fieldName: string) {
+  if (value === undefined || value === null || value === "") return undefined;
+  const number = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(number)) throw new ApiError(`${fieldName} must be a number.`);
+  return number;
+}
+
 export function dateValue(value: unknown, fieldName: string) {
   if (value === undefined || value === null || value === "") return undefined;
   if (typeof value !== "string") throw new ApiError(`${fieldName} must be a date string.`);
@@ -66,7 +73,7 @@ export async function requireUser() {
     where: { id: data.user.id },
     update: {
       email: data.user.email,
-      name: data.user.user_metadata?.name ?? data.user.user_metadata?.full_name,
+      name: data.user.user_metadata?.name ?? data.user.user_metadata?.full_name ?? undefined,
     },
     create: {
       id: data.user.id,
@@ -77,8 +84,30 @@ export async function requireUser() {
 }
 
 export async function ensureEvent(userId: string, eventId: string) {
-  const event = await prisma.event.findFirst({ where: { id: eventId, userId } });
+  const event = await prisma.event.findFirst({
+    where: {
+      id: eventId,
+      OR: [
+        { userId },
+        { calendar: { members: { some: { userId, status: "accepted" } } } },
+      ],
+    },
+    include: { calendar: { include: { members: true } } },
+  });
   if (!event) throw new ApiError("Event not found.", 404);
+  return event;
+}
+
+export async function ensureEditableEvent(userId: string, eventId: string) {
+  const event = await ensureEvent(userId, eventId);
+  const member = event.calendar?.members.find((item) => item.userId === userId);
+  const canEdit =
+    event.userId === userId ||
+    event.calendar?.ownerId === userId ||
+    member?.role === "owner" ||
+    member?.role === "editor";
+
+  if (!canEdit) throw new ApiError("You do not have permission to edit this event.", 403);
   return event;
 }
 
@@ -92,4 +121,50 @@ export async function ensureCategory(userId: string, categoryId: string) {
   const category = await prisma.category.findFirst({ where: { id: categoryId, userId } });
   if (!category) throw new ApiError("Category not found.", 404);
   return category;
+}
+
+export async function ensureCalendar(userId: string, calendarId: string) {
+  const calendar = await prisma.calendar.findFirst({
+    where: {
+      id: calendarId,
+      OR: [
+        { ownerId: userId },
+        { members: { some: { userId, status: "accepted" } } },
+      ],
+    },
+  });
+  if (!calendar) throw new ApiError("Calendar not found.", 404);
+  return calendar;
+}
+
+export async function ensureWritableCalendar(userId: string, calendarId: string) {
+  const calendar = await prisma.calendar.findFirst({
+    where: {
+      id: calendarId,
+      OR: [
+        { ownerId: userId },
+        {
+          members: {
+            some: {
+              userId,
+              status: "accepted",
+              role: { in: ["owner", "editor"] },
+            },
+          },
+        },
+      ],
+    },
+    include: { members: true },
+  });
+  if (!calendar) throw new ApiError("You cannot add or move events to this calendar.", 403);
+  return calendar;
+}
+
+export async function ensureOwnedCalendar(userId: string, calendarId: string) {
+  const calendar = await prisma.calendar.findFirst({
+    where: { id: calendarId, ownerId: userId },
+    include: { members: true },
+  });
+  if (!calendar) throw new ApiError("Only the calendar owner can do that.", 403);
+  return calendar;
 }

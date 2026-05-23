@@ -13,13 +13,13 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Arcgenda Calendar",
-  description: "A fast iPhone-style calendar PWA built with Next.js.",
-  applicationName: "Arcgenda Calendar",
+  title: "Arcgenda",
+  description: "A fast iPhone-style calendar and productivity PWA built with Next.js.",
+  applicationName: "Arcgenda",
   manifest: "/manifest.webmanifest",
   appleWebApp: {
     capable: true,
-    title: "Arcgenda Calendar",
+    title: "Arcgenda",
     statusBarStyle: "default",
   },
   formatDetection: {
@@ -27,10 +27,11 @@ export const metadata: Metadata = {
   },
   icons: {
     icon: [
-      { url: "/icons/icon.svg", type: "image/svg+xml" },
+      { url: "/icons/arcgenda-icon-32.png", sizes: "32x32", type: "image/png" },
+      { url: "/icons/arcgenda-icon-192.png", sizes: "192x192", type: "image/png" },
       { url: "/favicon.ico" },
     ],
-    apple: [{ url: "/icons/apple-touch-icon.svg" }],
+    apple: [{ url: "/icons/arcgenda-icon-180.png", sizes: "180x180", type: "image/png" }],
   },
 };
 
@@ -40,8 +41,8 @@ export const viewport: Viewport = {
   maximumScale: 1,
   viewportFit: "cover",
   themeColor: [
-    { media: "(prefers-color-scheme: light)", color: "#f9f9fb" },
-    { media: "(prefers-color-scheme: dark)", color: "#000000" },
+    { media: "(prefers-color-scheme: light)", color: "#f6f4ff" },
+    { media: "(prefers-color-scheme: dark)", color: "#18181b" },
   ],
 };
 
@@ -56,6 +57,12 @@ export default function RootLayout({
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
       <body className="min-h-full flex flex-col">
+        <script
+          dangerouslySetInnerHTML={{
+            __html:
+              "try{var t=localStorage.getItem('arcgenda-theme-hydration');if(t==='dark'){document.documentElement.classList.add('dark');document.documentElement.dataset.theme='dark'}else if(t){document.documentElement.dataset.theme=t}}catch(e){}",
+          }}
+        />
         {children}
         <script src="/register-sw.js" async />
       </body>

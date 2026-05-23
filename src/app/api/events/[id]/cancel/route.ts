@@ -1,4 +1,4 @@
-import { ApiError, booleanValue, dateValue, ensureEvent, fail, ok, readBody, requireUser, stringValue } from "@/lib/api-helpers";
+import { ApiError, booleanValue, dateValue, ensureEditableEvent, fail, ok, readBody, requireUser, stringValue } from "@/lib/api-helpers";
 import { prisma } from "@/lib/prisma";
 
 export async function PATCH(request: Request, context: { params: Promise<{ id: string }> }) {
@@ -6,7 +6,7 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
     const user = await requireUser();
     const { id } = await context.params;
     const body = await readBody(request);
-    const event = await ensureEvent(user.id, id);
+    const event = await ensureEditableEvent(user.id, id);
     const reminderAt = dateValue(body.reminderAt, "reminderAt");
     const createRescheduleReminder = booleanValue(body.createRescheduleReminder) ?? false;
     const createRescheduleTask = booleanValue(body.createRescheduleTask) ?? false;
@@ -22,8 +22,9 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
           status: "cancelled",
           cancellationReason: stringValue(body.cancellationReason),
           cancelledAt: new Date(),
+          updatedById: user.id,
         },
-        include: { category: true, tasks: true, reminders: true },
+        include: { calendar: true, category: true, tasks: true, reminders: true, shares: true },
       });
 
       const title = `Reschedule: ${event.title}`;
@@ -47,8 +48,18 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
               title,
               remindAt: reminderAt!,
             },
-          })
+        })
         : null;
+
+      await tx.activityHistory.create({
+        data: {
+          calendarId: cancelledEvent.calendarId,
+          eventId: id,
+          userId: user.id,
+          action: "event.cancelled",
+          details: stringValue(body.cancellationReason) ?? `Cancelled "${event.title}"`,
+        },
+      });
 
       return { event: cancelledEvent, task, reminder };
     });

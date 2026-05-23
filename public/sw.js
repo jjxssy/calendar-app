@@ -1,5 +1,5 @@
 const CACHE_NAME = "arcgenda-calendar-v2";
-const APP_SHELL = ["/", "/manifest.webmanifest", "/icons/icon.svg"];
+const APP_SHELL = ["/", "/manifest.webmanifest", "/icons/arcgenda-icon-192.png"];
 
 self.addEventListener("install", function (event) {
   event.waitUntil(

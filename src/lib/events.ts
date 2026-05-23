@@ -14,6 +14,7 @@ export type RescheduleReminder = {
 
 export type CalendarEvent = {
   id: string;
+  calendarId?: string;
   title: string;
   date: string;
   time: string;
@@ -28,6 +29,10 @@ export type CalendarEvent = {
   status: EventStatus;
   cancellationReason?: string;
   cancelledAt?: string;
+  createdBy?: string;
+  lastEditedBy?: string;
+  sharedWith?: Array<{ id: string; email: string; role: "editor" | "viewer"; status: "pending" | "accepted" }>;
+  activity?: Array<{ id: string; text: string; at: string }>;
   rescheduleReminders: RescheduleReminder[];
   tasks: Array<{ id: string; title: string; done: boolean }>;
 };
@@ -41,19 +46,12 @@ export type CategoryStyle = {
 };
 
 export const categoryStyles: Record<string, CategoryStyle> = {
-  work: {
-    id: "work",
-    label: "Work",
-    icon: "briefcase",
-    color: "#007aff",
-    tint: "#e5f1ff",
-  },
-  personal: {
-    id: "personal",
-    label: "Personal",
-    icon: "heart",
-    color: "#ff2d55",
-    tint: "#ffe8ef",
+  hobby: {
+    id: "hobby",
+    label: "Hobby",
+    icon: "sparkles",
+    color: "#af52de",
+    tint: "#f7eaff",
   },
   health: {
     id: "health",
@@ -62,12 +60,47 @@ export const categoryStyles: Record<string, CategoryStyle> = {
     color: "#34c759",
     tint: "#e8f9ee",
   },
+  study: {
+    id: "study",
+    label: "Study",
+    icon: "book",
+    color: "#5856d6",
+    tint: "#ededff",
+  },
+  errands: {
+    id: "errands",
+    label: "Errands",
+    icon: "check",
+    color: "#ff9500",
+    tint: "#fff2df",
+  },
+  social: {
+    id: "social",
+    label: "Social",
+    icon: "users",
+    color: "#ff2d55",
+    tint: "#ffe8ef",
+  },
+  fitness: {
+    id: "fitness",
+    label: "Fitness",
+    icon: "heart",
+    color: "#00c7be",
+    tint: "#e4fbf9",
+  },
+  important: {
+    id: "important",
+    label: "Important",
+    icon: "pin",
+    color: "#ff3b30",
+    tint: "#ffe8e6",
+  },
   creative: {
     id: "creative",
     label: "Creative",
     icon: "palette",
-    color: "#af52de",
-    tint: "#f7eaff",
+    color: "#5ac8fa",
+    tint: "#e7f8ff",
   },
 };
 

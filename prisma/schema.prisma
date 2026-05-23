@@ -21,17 +21,80 @@ enum Priority {
   urgent
 }
 
+enum CalendarRole {
+  owner
+  editor
+  viewer
+}
+
+enum ShareStatus {
+  pending
+  accepted
+  declined
+  revoked
+}
+
+enum FeedbackCategory {
+  feedback
+  bug
+  feature
+  contact
+}
+
 model User {
   id        String     @id
   email     String     @unique
   name      String?
+  theme     String     @default("system")
   createdAt DateTime   @default(now())
   updatedAt DateTime   @updatedAt
 
+  ownedCalendars Calendar[] @relation("CalendarOwner")
+  calendarMemberships CalendarMember[]
+  eventShares EventShare[]
+  activityEntries ActivityHistory[]
+  notificationPreference NotificationPreference?
   events    Event[]
   tasks     Task[]
   categories Category[]
   reminders Reminder[]
+  feedback  Feedback[]
+}
+
+model Calendar {
+  id          String   @id @default(cuid())
+  ownerId     String
+  name        String
+  color       String
+  visible     Boolean  @default(true)
+  shared      Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  owner       User     @relation("CalendarOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  members     CalendarMember[]
+  events      Event[]
+  activity    ActivityHistory[]
+
+  @@index([ownerId])
+}
+
+model CalendarMember {
+  id         String       @id @default(cuid())
+  calendarId String
+  userId     String?
+  email      String
+  displayName String?
+  role       CalendarRole @default(viewer)
+  status     ShareStatus  @default(pending)
+  createdAt  DateTime     @default(now())
+  updatedAt  DateTime     @updatedAt
+
+  calendar   Calendar     @relation(fields: [calendarId], references: [id], onDelete: Cascade)
+  user       User?        @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@unique([calendarId, email])
+  @@index([userId])
 }
 
 model Category {
@@ -52,7 +115,10 @@ model Category {
 model Event {
   id                 String      @id @default(cuid())
   userId             String
+  calendarId         String?
   categoryId         String?
+  createdById        String?
+  updatedById        String?
   title              String
   description        String?
   startDate          DateTime
@@ -71,12 +137,16 @@ model Event {
   updatedAt          DateTime    @updatedAt
 
   user               User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  calendar           Calendar?   @relation(fields: [calendarId], references: [id], onDelete: SetNull)
   category           Category?   @relation(fields: [categoryId], references: [id], onDelete: SetNull)
   tasks              Task[]
   reminders          Reminder[]
+  shares             EventShare[]
+  activity           ActivityHistory[]
 
   @@index([userId, startDate])
   @@index([userId, status])
+  @@index([calendarId])
   @@index([categoryId])
 }
 
@@ -118,4 +188,80 @@ model Reminder {
   @@index([userId, remindAt])
   @@index([eventId])
   @@index([taskId])
+}
+
+model EventShare {
+  id        String      @id @default(cuid())
+  eventId   String
+  userId    String?
+  email     String
+  role      CalendarRole @default(viewer)
+  status    ShareStatus  @default(pending)
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+
+  event     Event       @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  user      User?       @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@unique([eventId, email])
+  @@index([userId])
+}
+
+model ActivityHistory {
+  id         String   @id @default(cuid())
+  calendarId String?
+  eventId    String?
+  userId     String?
+  action     String
+  details    String?
+  createdAt  DateTime @default(now())
+
+  calendar   Calendar? @relation(fields: [calendarId], references: [id], onDelete: Cascade)
+  event      Event?    @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  user       User?     @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([calendarId])
+  @@index([eventId])
+  @@index([userId])
+}
+
+model NotificationPreference {
+  id                    String   @id @default(cuid())
+  userId                String   @unique
+  eventReminders        Boolean  @default(true)
+  taskReminders         Boolean  @default(true)
+  dailyAgenda           Boolean  @default(false)
+  rescheduleReminders   Boolean  @default(true)
+  birthdayReminders     Boolean  @default(false)
+  desktopNotifications  Boolean  @default(false)
+  mobileNotifications   Boolean  @default(false)
+  quietHoursEnabled     Boolean  @default(false)
+  quietHoursStart       String   @default("22:00")
+  quietHoursEnd         String   @default("07:00")
+  soundEnabled          Boolean  @default(false)
+  vibrationEnabled      Boolean  @default(true)
+  defaultReminderMinutes Int     @default(15)
+  aiEnabled             Boolean  @default(false)
+  aiScheduling          Boolean  @default(false)
+  aiInsights            Boolean  @default(false)
+  aiWeeklySummary       Boolean  @default(false)
+  privateMode           Boolean  @default(true)
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  user                  User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Feedback {
+  id        String           @id @default(cuid())
+  userId    String?
+  name      String
+  email     String
+  category  FeedbackCategory @default(feedback)
+  message   String
+  createdAt DateTime         @default(now())
+
+  user      User?            @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
 }
