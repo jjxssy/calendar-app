@@ -58,7 +58,7 @@ function SectionTitle({
 }
 
 function MiniCalendarPreview() {
-  const days = Array.from({ length: 21 }, (_, index) => index + 1);
+  const days = [26, 27, 28, 29, 30, 31, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29];
   return (
     <DemoWindow className="float-soft">
       <div className="flex items-center justify-between">
@@ -68,12 +68,17 @@ function MiniCalendarPreview() {
         </div>
         <span className="rounded-full bg-[#e5f1ff] px-3 py-1 text-sm font-bold text-[#007aff]">Today</span>
       </div>
-      <div className="mt-4 grid grid-cols-7 gap-2">
-        {days.map((day) => (
+      <div className="mt-4 grid grid-cols-7 text-center text-[11px] font-black text-[#8e8e93]">
+        {["S", "M", "T", "W", "T", "F", "S"].map((day, index) => (
+          <span key={`${day}-${index}`}>{day}</span>
+        ))}
+      </div>
+      <div className="mt-2 grid grid-cols-7 grid-rows-5 gap-1.5">
+        {days.map((day, index) => (
           <div
-            key={day}
-            className={`aspect-square rounded-2xl p-2 text-xs font-black ${
-              day === 11
+            key={`${day}-${index}`}
+            className={`grid aspect-square place-items-center rounded-2xl text-xs font-black ${
+              day === 24 && index === 29
                 ? "bg-[#007aff] text-white shadow-lg shadow-[#007aff]/25"
                 : "bg-white/75 text-[#636366]"
             }`}
@@ -149,8 +154,8 @@ function SharedPreview() {
       </div>
       <div className="mt-4 grid gap-3">
         {[
-          ["Family", "Owner", "Created by Jessy"],
-          ["Work sprint", "Editor", "Edited by Yasmin"],
+          ["Family", "Owner", "Created by owner"],
+          ["Work sprint", "Editor", "Edited by teammate"],
           ["Dinner plan", "Viewer", "Specific event share"],
         ].map(([name, role, meta]) => (
           <div key={name} className="rounded-3xl bg-white/76 p-3 shadow-lg shadow-black/5">

@@ -73,11 +73,23 @@ import {
   buildAiSuggestions,
   computeStats,
   defaultSettings,
+  NotificationSettings,
 } from "@/lib/free-tier";
 import { BrandMark } from "@/components/brand/brand-mark";
 
 type AppTab = "calendar" | "tasks" | "alerts" | "stats" | "settings";
 type ComposerKind = "event" | "task";
+type SettingsSectionId =
+  | "profile"
+  | "calendars"
+  | "notifications"
+  | "theme"
+  | "ai"
+  | "sync"
+  | "pro"
+  | "account"
+  | "danger"
+  | "links";
 
 type EventDraft = Pick<
   CalendarEvent,
@@ -213,6 +225,18 @@ type DbEvent = {
 const viewOptions: CalendarView[] = ["month", "week", "day"];
 const recurrences: Recurrence[] = ["none", "daily", "weekly", "monthly", "yearly"];
 const timelineSlots = ["08:00", "09:00", "10:00", "11:00", "12:00", "13:00", "14:00", "15:00", "16:00", "17:00", "18:00"];
+const settingsNavigation: Array<{ id: SettingsSectionId; label: string }> = [
+  { id: "profile", label: "Profile" },
+  { id: "calendars", label: "Calendars" },
+  { id: "notifications", label: "Notifications" },
+  { id: "theme", label: "Theme" },
+  { id: "ai", label: "AI & Privacy" },
+  { id: "sync", label: "Sync & Export" },
+  { id: "pro", label: "Pro" },
+  { id: "account", label: "Account" },
+  { id: "danger", label: "Danger" },
+  { id: "links", label: "Links" },
+];
 const colorGrid = [
   "#007aff",
   "#34c759",
@@ -238,18 +262,51 @@ function currentTimeValue(date = new Date()) {
 
 function requestNotificationPermission() {
   if ("Notification" in window && Notification.permission === "default") {
-    void Notification.requestPermission();
+    return Notification.requestPermission();
   }
+  return Promise.resolve(
+    typeof window !== "undefined" && "Notification" in window
+      ? Notification.permission
+      : "unsupported",
+  );
+}
+
+async function showArcgendaNotification(body: string, vibrate: boolean) {
+  if (!("Notification" in window) || Notification.permission !== "granted") return false;
+
+  const options: NotificationOptions = {
+    body,
+    icon: "/icons/arcgenda-icon-192.png",
+    badge: "/icons/arcgenda-icon-192.png",
+    data: { url: "/calendar" },
+  };
+
+  if ("serviceWorker" in navigator && navigator.serviceWorker.controller) {
+    const registration = await navigator.serviceWorker.ready;
+    await registration.showNotification("Arcgenda", options);
+  } else {
+    new Notification("Arcgenda", options);
+  }
+
+  if (vibrate && canVibrateDevice()) navigator.vibrate(120);
+  return true;
 }
 
 function readCalendarData(session: AppSession | null, today: Date): CalendarData {
+  const cachedTheme =
+    typeof window !== "undefined" &&
+    (["system", "light", "dark"] as const).includes(
+      localStorage.getItem("arcgenda-theme-hydration") as AppSettings["theme"],
+    )
+      ? (localStorage.getItem("arcgenda-theme-hydration") as AppSettings["theme"])
+      : defaultSettings.theme;
   const fallback = {
     tags: Object.values(categoryStyles),
     calendars: [],
     events: createInitialEvents(today),
     standaloneTasks: [],
     eventReminders: [],
-    settings: defaultSettings,
+    settings: { ...defaultSettings, theme: cachedTheme },
   };
 
   if (session && typeof window !== "undefined") {
@@ -286,6 +343,7 @@ function mapCalendar(calendar: DbCalendar, session: AppSession | null): AppCalen
     role: calendar.ownerId === session?.user.id ? "owner" : ownMember?.role ?? "viewer",
     members: calendar.members.map((member) => ({
       id: member.id,
+      userId: member.userId,
       email: member.email,
       displayName: member.displayName ?? undefined,
       role: member.role,
@@ -378,6 +436,25 @@ function parseReminderMinutes(label: string) {
   return Number(label.match(/\d+/)?.[0] ?? 15);
 }
 
+function isQuietTime(settings: NotificationSettings, now = new Date()) {
+  if (!settings.quietHours) return false;
+  const current = now.getHours() * 60 + now.getMinutes();
+  const [startHour = 22, startMinute = 0] = settings.quietStart.split(":").map(Number);
+  const [endHour = 7, endMinute = 0] = settings.quietEnd.split(":").map(Number);
+  const start = startHour * 60 + startMinute;
+  const end = endHour * 60 + endMinute;
+  return start <= end ? current >= start && current <= end : current >= start || current <= end;
+}
+
+function detectMobileDevice() {
+  if (typeof navigator === "undefined") return false;
+  return /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+}
+
+function canVibrateDevice() {
+  return typeof navigator !== "undefined" && "vibrate" in navigator;
+}
+
 function emptyDraft(date: Date, category: string): EventDraft {
   return {
     calendarId: "personal",
@@ -444,11 +521,14 @@ export default function CalendarDashboard() {
   const [selectedDate, setSelectedDate] = useState(today);
   const [view, setView] = useState<CalendarView>("month");
   const [activeTab, setActiveTab] = useState<AppTab>("calendar");
+  const [activeSettingsSection, setActiveSettingsSection] =
+    useState<SettingsSectionId>("profile");
   const [query, setQuery] = useState("");
   const [tags, setTags] = useState<CategoryStyle[]>(() => initialData.tags);
   const [calendars, setCalendars] = useState<AppCalendar[]>(() => initialData.calendars);
   const [activeCategory, setActiveCategory] = useState<string | "all">("all");
   const [events, setEvents] = useState(() => initialData.events);
+  const [savedSettings, setSavedSettings] = useState<AppSettings>(() => initialData.settings);
   const [settings, setSettings] = useState<AppSettings>(() => initialData.settings);
   const [calendarDraft, setCalendarDraft] = useState({ name: "", color: "#007aff" });
   const [memberDraft, setMemberDraft] = useState({
@@ -497,6 +577,11 @@ export default function CalendarDashboard() {
   const [workspaceMessage, setWorkspaceMessage] = useState("");
   const [settingsMessage, setSettingsMessage] = useState("");
   const [settingsError, setSettingsError] = useState("");
+  const [composerSubmitting, setComposerSubmitting] = useState(false);
+  const [busyActions, setBusyActions] = useState<Set<string>>(() => new Set());
+  const [notificationPermissionState, setNotificationPermissionState] = useState("unsupported");
+  const [isMobileDevice, setIsMobileDevice] = useState(false);
+  const [canVibrate, setCanVibrate] = useState(false);
   const [deleteCalendarTarget, setDeleteCalendarTarget] = useState<AppCalendar | null>(null);
   const [deleteAccountOpen, setDeleteAccountOpen] = useState(false);
   const [deleteAccountText, setDeleteAccountText] = useState("");
@@ -552,26 +637,58 @@ export default function CalendarDashboard() {
     ],
     [events, standaloneTasks],
   );
-  const alertItems = useMemo(
-    () =>
-      events
-        .flatMap((event) => event.rescheduleReminders)
-        .concat(eventReminders)
-        .concat(
-          standaloneTasks
-            .filter((task) => !task.done)
-            .map((task) => ({
-              id: `task-alert-${task.id}`,
-              eventId: task.eventId ?? "none",
-              title: `Task reminder: ${task.title}`,
-              date: task.reminderDate,
-              time: task.reminderTime,
-              done: task.done,
-            })),
-        )
-        .sort((a, b) => `${a.date} ${a.time}`.localeCompare(`${b.date} ${b.time}`)),
-    [eventReminders, events, standaloneTasks],
-  );
+  const alertItems = useMemo(() => {
+    const reminderMinutes = parseReminderMinutes(settings.notifications.defaultTiming);
+    const eventAlerts = settings.notifications.eventReminders
+      ? events
+          .filter((event) => event.status === "scheduled")
+          .map((event) => {
+            const start = new Date(
+              `${event.date}T${event.allDay || event.time === "All day" ? "09:00" : event.time}:00`,
+            );
+            const alertAt = new Date(start.getTime() - reminderMinutes * 60000);
+            return {
+              id: `event-alert-${event.id}-${reminderMinutes}`,
+              eventId: event.id,
+              title: `Event reminder: ${event.title}`,
+              date: toDateKey(alertAt),
+              time: currentTimeValue(alertAt),
+              done: false,
+            };
+          })
+      : [];
+    const rescheduleAlerts = settings.notifications.rescheduleReminders
+      ? events.flatMap((event) => event.rescheduleReminders).concat(eventReminders)
+      : [];
+    const taskAlerts = settings.notifications.taskReminders
+      ? standaloneTasks
+          .filter((task) => !task.done)
+          .map((task) => ({
+            id: `task-alert-${task.id}`,
+            eventId: task.eventId ?? "none",
+            title: `Task reminder: ${task.title}`,
+            date: task.reminderDate,
+            time: task.reminderTime,
+            done: task.done,
+          }))
+      : [];
+    const dailyAgendaAlert = settings.notifications.dailyAgenda
+      ? [
+          {
+            id: `daily-agenda-${toDateKey(today)}`,
+            eventId: "none",
+            title: `Daily agenda: ${selectedEvents.length} event${selectedEvents.length === 1 ? "" : "s"} today`,
+            date: toDateKey(today),
+            time: settings.notifications.quietEnd || "08:00",
+            done: false,
+          },
+        ]
+      : [];
+
+    return [...eventAlerts, ...rescheduleAlerts, ...taskAlerts, ...dailyAgendaAlert].sort((a, b) =>
+      `${a.date} ${a.time}`.localeCompare(`${b.date} ${b.time}`),
+    );
+  }, [eventReminders, events, selectedEvents.length, settings.notifications, standaloneTasks, today]);
   const unboundUndoneTasks = useMemo(
     () => standaloneTasks.filter((task) => !task.done && !task.eventId),
     [standaloneTasks],
@@ -584,10 +701,23 @@ export default function CalendarDashboard() {
     () => buildAiSuggestions(stats, filteredEvents),
     [filteredEvents, stats],
   );
-  const notificationPermission =
-    typeof window !== "undefined" && "Notification" in window
-      ? Notification.permission
-      : "unsupported";
+  const notificationPermission = notificationPermissionState;
+
+  function markBusy(action: string, busy: boolean) {
+    setBusyActions((current) => {
+      const next = new Set(current);
+      if (busy) {
+        next.add(action);
+      } else {
+        next.delete(action);
+      }
+      return next;
+    });
+  }
+
+  function isBusy(action: string) {
+    return busyActions.has(action);
+  }
 
   async function loadWorkspace() {
     if (!session) return;
@@ -711,6 +841,7 @@ export default function CalendarDashboard() {
             eventTitle: "Standalone task",
           })),
       );
+      setSavedSettings(mappedSettings);
       setSettings(mappedSettings);
       setMemberDraft((current) => ({
         ...current,
@@ -732,10 +863,62 @@ export default function CalendarDashboard() {
 
   useEffect(() => {
     const root = document.documentElement;
-    root.dataset.theme = settings.theme;
-    root.classList.toggle("dark", settings.theme === "dark");
-    localStorage.setItem("arcgenda-theme-hydration", settings.theme);
+    const applyTheme = () => {
+      const systemDark = window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? false;
+      const dark = settings.theme === "dark" || (settings.theme === "system" && systemDark);
+      root.dataset.theme = settings.theme;
+      root.classList.toggle("dark", dark);
+    };
+    applyTheme();
+    const media = window.matchMedia?.("(prefers-color-scheme: dark)");
+    media?.addEventListener("change", applyTheme);
+    return () => media?.removeEventListener("change", applyTheme);
   }, [settings.theme]);
+
+  useEffect(() => {
+    localStorage.setItem("arcgenda-theme-hydration", savedSettings.theme);
+  }, [savedSettings.theme]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      const cachedTheme = localStorage.getItem("arcgenda-theme-hydration");
+      if (cachedTheme === "system" || cachedTheme === "light" || cachedTheme === "dark") {
+        setSettings((current) => ({ ...current, theme: cachedTheme }));
+        setSavedSettings((current) => ({ ...current, theme: cachedTheme }));
+      }
+      setNotificationPermissionState(
+        "Notification" in window ? Notification.permission : "unsupported",
+      );
+      setIsMobileDevice(detectMobileDevice());
+      setCanVibrate(canVibrateDevice());
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, []);
+
+  function revertUnsavedSettings() {
+    setSettings(savedSettings);
+    setSettingsMessage("");
+    setSettingsError("");
+  }
+
+  useEffect(() => {
+    if (activeTab !== "settings") {
+      const timer = window.setTimeout(revertUnsavedSettings, 0);
+      return () => window.clearTimeout(timer);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab]);
+
+  useEffect(() => {
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "hidden" && activeTab === "settings") {
+        revertUnsavedSettings();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", onVisibilityChange);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, savedSettings]);
 
   useEffect(() => {
     if (!isAuthed) return;
@@ -745,12 +928,24 @@ export default function CalendarDashboard() {
       alertItems.forEach((item) => {
         const due = new Date(`${item.date}T${item.time}`);
         if (due <= now && !firedAlerts.current.has(item.id)) {
+          if (isQuietTime(settings.notifications, now)) return;
           firedAlerts.current.add(item.id);
           if ("Notification" in window && Notification.permission === "granted") {
-            new Notification("Arcgenda", { body: item.title });
-          } else {
-            window.alert(item.title);
+            void showArcgendaNotification(item.title, settings.notifications.vibration);
+            return;
           }
+          if ("Notification" in window && Notification.permission === "default") {
+            void requestNotificationPermission().then((permission) => {
+              setNotificationPermissionState(permission);
+              if (permission === "granted") {
+                void showArcgendaNotification(item.title, settings.notifications.vibration);
+              } else {
+                window.alert(item.title);
+              }
+            });
+            return;
+          }
+          window.alert(item.title);
         }
       });
     };
@@ -758,7 +953,7 @@ export default function CalendarDashboard() {
     checkAlerts();
     const interval = window.setInterval(checkAlerts, 30000);
     return () => window.clearInterval(interval);
-  }, [alertItems, isAuthed]);
+  }, [alertItems, isAuthed, settings.notifications]);
 
   function tagFor(event: CalendarEvent) {
     return tagMap[event.category] ?? tags[0];
@@ -784,6 +979,7 @@ export default function CalendarDashboard() {
   }
 
   function openNewEvent() {
+    if (composerSubmitting) return;
     setEditingId(null);
     const now = new Date();
     setComposerKind("event");
@@ -808,7 +1004,7 @@ export default function CalendarDashboard() {
   }
 
   function openEditEvent(event: CalendarEvent) {
-    if (event.status === "cancelled") return;
+    if (event.status === "cancelled" || composerSubmitting || isBusy(`event:${event.id}`)) return;
     setEditingId(event.id);
     setComposerKind("event");
     setDraft(eventToDraft(event));
@@ -818,11 +1014,13 @@ export default function CalendarDashboard() {
 
   async function saveTask(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (composerSubmitting) return;
     const title = taskDraft.title.trim();
     if (!title) return;
 
+    setComposerSubmitting(true);
     try {
-      await apiJson<{ task: DbTask }>("/api/tasks", {
+      const payload = await apiJson<{ task: DbTask }>("/api/tasks", {
         method: "POST",
         body: JSON.stringify({
           title,
@@ -830,10 +1028,27 @@ export default function CalendarDashboard() {
           dueDate: `${taskDraft.reminderDate}T${taskDraft.reminderTime}:00`,
         }),
       });
-      await loadWorkspace();
+      const createdTask = payload.task;
+      if (!createdTask.eventId) {
+        setStandaloneTasks((current) => [
+          {
+            id: createdTask.id,
+            title: createdTask.title,
+            done: createdTask.completed,
+            reminderDate: createdTask.dueDate ? toDateKey(new Date(createdTask.dueDate)) : taskDraft.reminderDate,
+            reminderTime: createdTask.dueDate ? currentTimeValue(new Date(createdTask.dueDate)) : taskDraft.reminderTime,
+            eventId: null,
+            eventTitle: "Standalone task",
+          },
+          ...current,
+        ]);
+      }
+      void loadWorkspace();
     } catch (error) {
       setWorkspaceMessage(error instanceof Error ? error.message : "Could not create task.");
       return;
+    } finally {
+      setComposerSubmitting(false);
     }
 
     setTaskDraft({
@@ -842,13 +1057,14 @@ export default function CalendarDashboard() {
       reminderTime: currentTimeValue(),
       eventId: "none",
     });
-    requestNotificationPermission();
+    void requestNotificationPermission().then(setNotificationPermissionState);
     setComposerOpen(false);
     setActiveTab("tasks");
   }
 
   async function saveEvent(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (composerSubmitting) return;
     const title = draft.title.trim();
     if (!title) return;
 
@@ -865,21 +1081,56 @@ export default function CalendarDashboard() {
       return;
     }
 
+    const startDate = dateTimeFromDraft(draft.date, draft.time, draft.allDay);
+    const endDate = new Date(new Date(startDate).getTime() + minutesFromDuration(draft.duration) * 60000).toISOString();
+    const payload = {
+      calendarId: draft.calendarId,
+      categoryId: draft.category,
+      title,
+      description: draft.notes.trim(),
+      startDate,
+      endDate,
+      allDay: draft.allDay,
+      location: draft.location.trim() || "No location",
+      priority: previous?.priority ?? "normal",
+      pinned: draft.pinned,
+    };
+    const optimisticId = editingId ?? `temp-${createId()}`;
+    const previousEvents = events;
+    const optimisticEvent: CalendarEvent = {
+      id: optimisticId,
+      calendarId: draft.calendarId,
+      title,
+      date: draft.date,
+      time: draft.allDay ? "All day" : draft.time,
+      duration: draft.duration,
+      category: draft.category,
+      priority: previous?.priority ?? "normal",
+      recurrence: draft.recurrence,
+      location: draft.location.trim() || "No location",
+      notes: draft.notes.trim(),
+      allDay: draft.allDay,
+      pinned: draft.pinned,
+      status: previous?.status ?? "scheduled",
+      tasks: previous?.tasks ?? [],
+      rescheduleReminders: previous?.rescheduleReminders ?? [],
+      sharedWith: previous?.sharedWith,
+      activity: previous?.activity,
+    };
+
+    setComposerSubmitting(true);
+    if (editingId) {
+      setEvents((current) => current.map((item) => (item.id === editingId ? optimisticEvent : item)));
+    } else {
+      setEvents((current) => [optimisticEvent, ...current]);
+    }
+    setSelectedDate(fromDateKey(draft.date));
+    setVisibleMonth(startOfMonth(fromDateKey(draft.date)));
+    setComposerOpen(false);
+    setEditingId(null);
+    setSelectedTaskIds([]);
+
     try {
-      const startDate = dateTimeFromDraft(draft.date, draft.time, draft.allDay);
-      const endDate = new Date(new Date(startDate).getTime() + minutesFromDuration(draft.duration) * 60000).toISOString();
-      const payload = {
-        calendarId: draft.calendarId,
-        categoryId: draft.category,
-        title,
-        description: draft.notes.trim(),
-        startDate,
-        endDate,
-        allDay: draft.allDay,
-        location: draft.location.trim() || "No location",
-        priority: previous?.priority ?? "normal",
-        pinned: draft.pinned,
-      };
       const saved = editingId
         ? await apiJson<{ event: DbEvent }>(`/api/events/${editingId}`, {
             method: "PATCH",
@@ -908,66 +1159,105 @@ export default function CalendarDashboard() {
             remindAt: `${eventReminderDraft.date}T${eventReminderDraft.time}:00`,
           }),
         });
-        requestNotificationPermission();
+        void requestNotificationPermission().then(setNotificationPermissionState);
       }
-      await loadWorkspace();
+      void loadWorkspace();
     } catch (error) {
+      setEvents(previousEvents);
       setWorkspaceMessage(error instanceof Error ? error.message : "Could not save event.");
       return;
+    } finally {
+      setComposerSubmitting(false);
     }
-
-    const nextDate = fromDateKey(draft.date);
-    setSelectedDate(nextDate);
-    setVisibleMonth(startOfMonth(nextDate));
-    setComposerOpen(false);
-    setEditingId(null);
-    setSelectedTaskIds([]);
   }
 
   async function deleteEvent(id: string) {
+    const action = `event:${id}:delete`;
+    if (isBusy(action)) return;
+    const previousEvents = events;
+    setEvents((current) => current.map((event) => (event.id === id ? { ...event, status: "archived" } : event)));
+    markBusy(action, true);
     try {
       await apiJson(`/api/events/${id}`, { method: "DELETE" });
-      await loadWorkspace();
+      void loadWorkspace();
     } catch (error) {
+      setEvents(previousEvents);
       setWorkspaceMessage(error instanceof Error ? error.message : "Could not archive event.");
+    } finally {
+      markBusy(action, false);
     }
   }
 
   async function confirmCancelEvent() {
     if (!cancelTarget) return;
+    const action = `event:${cancelTarget.id}:cancel`;
+    if (isBusy(action)) return;
+    const previousEvents = events;
+    const optimisticCancelled: CalendarEvent = {
+      ...cancelTarget,
+      status: "cancelled",
+      cancellationReason,
+      cancelledAt: new Date().toISOString(),
+    };
+    setEvents((current) =>
+      current.map((event) => (event.id === cancelTarget.id ? optimisticCancelled : event)),
+    );
+    setCancelTarget(null);
+    setCancellationReason("");
+    setRescheduleTarget(optimisticCancelled);
+    setRescheduleDraft({
+      date: toDateKey(addDays(fromDateKey(cancelTarget.date), 1)),
+      time: "09:00",
+    });
+    markBusy(action, true);
     try {
       const payload = await apiJson<{ event: DbEvent }>(`/api/events/${cancelTarget.id}/cancel`, {
         method: "PATCH",
         body: JSON.stringify({ cancellationReason }),
       });
       const cancelledEvent = mapEvent(payload.event);
-      await loadWorkspace();
-      setCancelTarget(null);
-      setCancellationReason("");
+      void loadWorkspace();
       setRescheduleTarget(cancelledEvent);
-      setRescheduleDraft({
-        date: toDateKey(addDays(fromDateKey(cancelTarget.date), 1)),
-        time: "09:00",
-      });
     } catch (error) {
+      setEvents(previousEvents);
+      setRescheduleTarget(null);
       setWorkspaceMessage(error instanceof Error ? error.message : "Could not cancel event.");
+    } finally {
+      markBusy(action, false);
     }
   }
 
   async function undoCancelEvent(id: string) {
+    const action = `event:${id}:undo`;
+    if (isBusy(action)) return;
+    const previousEvents = events;
+    setEvents((current) =>
+      current.map((event) =>
+        event.id === id
+          ? { ...event, status: "scheduled", cancellationReason: undefined, cancelledAt: undefined }
+          : event,
+      ),
+    );
+    markBusy(action, true);
     try {
       await apiJson(`/api/events/${id}`, {
         method: "PATCH",
         body: JSON.stringify({ status: "scheduled" }),
       });
-      await loadWorkspace();
+      void loadWorkspace();
     } catch (error) {
+      setEvents(previousEvents);
       setWorkspaceMessage(error instanceof Error ? error.message : "Could not restore event.");
+    } finally {
+      markBusy(action, false);
     }
   }
 
   async function createRescheduleReminder() {
     if (!rescheduleTarget) return;
+    const action = `reschedule:${rescheduleTarget.id}`;
+    if (isBusy(action)) return;
+    markBusy(action, true);
     try {
       const title = `Reschedule: ${rescheduleTarget.title}`;
       await apiJson("/api/reminders", {
@@ -986,91 +1276,198 @@ export default function CalendarDashboard() {
           dueDate: `${rescheduleDraft.date}T${rescheduleDraft.time}:00`,
         }),
       });
-      await loadWorkspace();
+      void loadWorkspace();
       selectDate(fromDateKey(rescheduleDraft.date));
       setActiveTab("alerts");
       setRescheduleTarget(null);
     } catch (error) {
       setWorkspaceMessage(error instanceof Error ? error.message : "Could not create reminder.");
+    } finally {
+      markBusy(action, false);
     }
   }
 
   async function toggleTask(taskId: string) {
+    const action = `task:${taskId}:toggle`;
+    if (isBusy(action)) return;
     const task =
       standaloneTasks.find((item) => item.id === taskId) ??
       events.flatMap((event) => event.tasks).find((item) => item.id === taskId);
     if (!task) return;
+    const previousEvents = events;
+    const previousTasks = standaloneTasks;
+    setStandaloneTasks((current) =>
+      current.map((item) => (item.id === taskId ? { ...item, done: !item.done } : item)),
+    );
+    setEvents((current) =>
+      current.map((event) => ({
+        ...event,
+        tasks: event.tasks.map((item) =>
+          item.id === taskId ? { ...item, done: !item.done } : item,
+        ),
+      })),
+    );
+    markBusy(action, true);
     try {
       await apiJson(`/api/tasks/${taskId}`, {
         method: "PATCH",
         body: JSON.stringify({ completed: !task.done }),
       });
-      await loadWorkspace();
+      void loadWorkspace();
     } catch (error) {
+      setEvents(previousEvents);
+      setStandaloneTasks(previousTasks);
       setWorkspaceMessage(error instanceof Error ? error.message : "Could not update task.");
+    } finally {
+      markBusy(action, false);
     }
   }
 
   async function createTaskForEvent(eventId: string) {
+    const action = `event:${eventId}:create-task`;
+    if (isBusy(action)) return;
     const title = eventTaskDrafts[eventId]?.trim();
     if (!title) return;
 
+    const tempId = `temp-task-${createId()}`;
+    const previousEvents = events;
+    setEvents((current) =>
+      current.map((event) =>
+        event.id === eventId
+          ? { ...event, tasks: [...event.tasks, { id: tempId, title, done: false }] }
+          : event,
+      ),
+    );
+    setEventTaskDrafts((current) => ({ ...current, [eventId]: "" }));
+    markBusy(action, true);
     try {
       await apiJson("/api/tasks", {
         method: "POST",
         body: JSON.stringify({ eventId, title }),
       });
-      await loadWorkspace();
-      setEventTaskDrafts((current) => ({ ...current, [eventId]: "" }));
+      void loadWorkspace();
     } catch (error) {
+      setEvents(previousEvents);
       setWorkspaceMessage(error instanceof Error ? error.message : "Could not create linked task.");
+    } finally {
+      markBusy(action, false);
     }
   }
 
   async function linkTaskToEvent(eventId: string, taskId: string) {
+    const action = `task:${taskId}:link`;
+    if (isBusy(action)) return;
+    const task = standaloneTasks.find((item) => item.id === taskId);
+    if (!task) return;
+    const previousEvents = events;
+    const previousTasks = standaloneTasks;
+    setStandaloneTasks((current) => current.filter((item) => item.id !== taskId));
+    setEvents((current) =>
+      current.map((event) =>
+        event.id === eventId
+          ? { ...event, tasks: [...event.tasks, { id: task.id, title: task.title, done: task.done }] }
+          : event,
+      ),
+    );
+    markBusy(action, true);
     try {
       await apiJson(`/api/tasks/${taskId}`, {
         method: "PATCH",
         body: JSON.stringify({ eventId }),
       });
-      await loadWorkspace();
+      void loadWorkspace();
     } catch (error) {
+      setEvents(previousEvents);
+      setStandaloneTasks(previousTasks);
       setWorkspaceMessage(error instanceof Error ? error.message : "Could not link task.");
+    } finally {
+      markBusy(action, false);
     }
   }
 
   async function unlinkTaskFromEvent(_eventId: string, taskId: string) {
+    const action = `task:${taskId}:unlink`;
+    if (isBusy(action)) return;
+    const linkedTask = events.flatMap((event) => event.tasks).find((task) => task.id === taskId);
+    const previousEvents = events;
+    const previousTasks = standaloneTasks;
+    setEvents((current) =>
+      current.map((event) => ({
+        ...event,
+        tasks: event.tasks.filter((task) => task.id !== taskId),
+      })),
+    );
+    if (linkedTask) {
+      setStandaloneTasks((current) => [
+        {
+          id: linkedTask.id,
+          title: linkedTask.title,
+          done: linkedTask.done,
+          reminderDate: toDateKey(selectedDate),
+          reminderTime: currentTimeValue(),
+          eventId: null,
+          eventTitle: "Standalone task",
+        },
+        ...current,
+      ]);
+    }
+    markBusy(action, true);
     try {
       await apiJson(`/api/tasks/${taskId}/unlink-event`, { method: "PATCH" });
-      await loadWorkspace();
+      void loadWorkspace();
     } catch (error) {
+      setEvents(previousEvents);
+      setStandaloneTasks(previousTasks);
       setWorkspaceMessage(error instanceof Error ? error.message : "Could not unlink task.");
+    } finally {
+      markBusy(action, false);
     }
   }
 
   async function deleteTask(taskId: string) {
+    const action = `task:${taskId}:delete`;
+    if (isBusy(action)) return;
+    const previousEvents = events;
+    const previousTasks = standaloneTasks;
+    setStandaloneTasks((current) => current.filter((task) => task.id !== taskId));
+    setEvents((current) =>
+      current.map((event) => ({
+        ...event,
+        tasks: event.tasks.filter((task) => task.id !== taskId),
+      })),
+    );
+    markBusy(action, true);
     try {
       await apiJson(`/api/tasks/${taskId}`, { method: "DELETE" });
-      await loadWorkspace();
+      void loadWorkspace();
     } catch (error) {
+      setEvents(previousEvents);
+      setStandaloneTasks(previousTasks);
       setWorkspaceMessage(error instanceof Error ? error.message : "Could not delete task.");
+    } finally {
+      markBusy(action, false);
     }
   }
 
   async function createCalendar(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    const action = "calendar:create";
+    if (isBusy(action)) return;
     const name = calendarDraft.name.trim();
     if (!name || calendars.length >= 3) return;
 
+    markBusy(action, true);
     try {
       await apiJson("/api/calendars", {
         method: "POST",
         body: JSON.stringify({ name, color: calendarDraft.color }),
       });
-      await loadWorkspace();
+      void loadWorkspace();
       setCalendarDraft({ name: "", color: "#007aff" });
     } catch (error) {
       setWorkspaceMessage(error instanceof Error ? error.message : "Could not create calendar.");
+    } finally {
+      markBusy(action, false);
     }
   }
 
@@ -1084,6 +1481,8 @@ export default function CalendarDashboard() {
 
   async function addCalendarMember(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    const action = "calendar:add-member";
+    if (isBusy(action)) return;
     const email = memberDraft.email.trim().toLowerCase();
     if (!email) return;
     const selectedCalendar = calendars.find((calendar) => calendar.id === memberDraft.calendarId);
@@ -1092,40 +1491,99 @@ export default function CalendarDashboard() {
     );
     if (!selectedCalendar || (!selectedCalendar.shared && sharedCalendarUsed)) return;
 
+    markBusy(action, true);
     try {
       await apiJson(`/api/calendars/${memberDraft.calendarId}/members`, {
         method: "POST",
         body: JSON.stringify({ email, role: memberDraft.role }),
       });
-      await loadWorkspace();
+      void loadWorkspace();
       setMemberDraft((current) => ({ ...current, email: "" }));
     } catch (error) {
       setWorkspaceMessage(error instanceof Error ? error.message : "Could not add invite.");
+    } finally {
+      markBusy(action, false);
     }
   }
 
   async function updateCalendar(calendarId: string, updates: { name?: string; color?: string }) {
+    const action = `calendar:${calendarId}:update`;
+    if (isBusy(action)) return;
+    const previousCalendars = calendars;
+    setCalendars((current) =>
+      current.map((calendar) => (calendar.id === calendarId ? { ...calendar, ...updates } : calendar)),
+    );
+    markBusy(action, true);
     try {
       await apiJson(`/api/calendars/${calendarId}`, {
         method: "PATCH",
         body: JSON.stringify(updates),
       });
-      await loadWorkspace();
+      void loadWorkspace();
       setWorkspaceMessage("Calendar saved.");
     } catch (error) {
+      setCalendars(previousCalendars);
       setWorkspaceMessage(error instanceof Error ? error.message : "Could not update calendar.");
+    } finally {
+      markBusy(action, false);
     }
   }
 
   async function deleteCalendar() {
     if (!deleteCalendarTarget) return;
+    const action = `calendar:${deleteCalendarTarget.id}:delete`;
+    if (isBusy(action)) return;
+    const target = deleteCalendarTarget;
+    const previousCalendars = calendars;
+    const previousEvents = events;
+    setDeleteCalendarTarget(null);
+    setCalendars((current) => current.filter((calendar) => calendar.id !== target.id));
+    setEvents((current) =>
+      current.map((event) =>
+        event.calendarId === target.id ? { ...event, status: "archived" } : event,
+      ),
+    );
+    markBusy(action, true);
     try {
-      await apiJson(`/api/calendars/${deleteCalendarTarget.id}`, { method: "DELETE" });
-      await loadWorkspace();
+      await apiJson(`/api/calendars/${target.id}`, { method: "DELETE" });
+      void loadWorkspace();
       setWorkspaceMessage("Calendar deleted. Its events were archived.");
-      setDeleteCalendarTarget(null);
     } catch (error) {
+      setCalendars(previousCalendars);
+      setEvents(previousEvents);
       setWorkspaceMessage(error instanceof Error ? error.message : "Could not delete calendar.");
+    } finally {
+      markBusy(action, false);
+    }
+  }
+
+  async function updateCalendarMember(calendarId: string, memberId: string, role: "owner" | "editor" | "viewer") {
+    try {
+      if (
+        role === "owner" &&
+        !window.confirm("Transfer ownership to this member? You will no longer be the owner.")
+      ) {
+        return;
+      }
+      await apiJson(`/api/calendars/${calendarId}/members/${memberId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ role }),
+      });
+      await loadWorkspace();
+      setWorkspaceMessage(role === "owner" ? "Ownership transferred." : "Member permissions updated.");
+    } catch (error) {
+      setWorkspaceMessage(error instanceof Error ? error.message : "Could not update member.");
+    }
+  }
+
+  async function removeCalendarMember(calendarId: string, memberId: string) {
+    try {
+      if (!window.confirm("Remove this person from the calendar?")) return;
+      await apiJson(`/api/calendars/${calendarId}/members/${memberId}`, { method: "DELETE" });
+      await loadWorkspace();
+      setWorkspaceMessage("Member removed.");
+    } catch (error) {
+      setWorkspaceMessage(error instanceof Error ? error.message : "Could not remove member.");
     }
   }
 
@@ -1167,6 +1625,7 @@ export default function CalendarDashboard() {
         }),
       ]);
       setSettingsMessage("Settings saved.");
+      setSavedSettings(settings);
       await loadWorkspace();
     } catch (error) {
       setSettingsError(error instanceof Error ? error.message : "Could not save settings.");
@@ -1207,6 +1666,12 @@ export default function CalendarDashboard() {
   }
 
   function updateNotificationSetting(key: keyof AppSettings["notifications"], value: boolean | string) {
+    if (
+      (key === "desktopNotifications" || key === "mobileNotifications") &&
+      value === true
+    ) {
+      void requestNotificationPermission().then(setNotificationPermissionState);
+    }
     setSettings((current) => ({
       ...current,
       notifications: { ...current.notifications, [key]: value },
@@ -1218,6 +1683,16 @@ export default function CalendarDashboard() {
       ...current,
       ai: { ...current.ai, [key]: value },
     }));
+  }
+
+  function selectSettingsSection(section: SettingsSectionId) {
+    setActiveSettingsSection(section);
+    window.setTimeout(() => {
+      document.getElementById(`settings-${section}`)?.scrollIntoView({
+        behavior: "smooth",
+        block: "start",
+      });
+    }, 0);
   }
 
   async function createTag(event: FormEvent<HTMLFormElement>) {
@@ -1257,6 +1732,9 @@ export default function CalendarDashboard() {
         <section className="flex h-dvh min-h-0 flex-col overflow-hidden bg-white/42 backdrop-blur-3xl lg:h-[calc(100dvh-48px)] lg:rounded-[36px] lg:border lg:border-white/55">
           <Header
             today={today}
+            activeTab={activeTab}
+            activeSettingsSection={activeSettingsSection}
+            onSettingsSectionChange={selectSettingsSection}
             query={query}
             setQuery={setQuery}
             onAdd={openNewEvent}
@@ -1351,42 +1829,92 @@ export default function CalendarDashboard() {
               <StatsTab stats={stats} aiSuggestions={aiSuggestions} aiEnabled={settings.ai.enabled} />
             )}
             {activeTab === "settings" && (
-              <SettingsTab
-                session={session}
-                calendars={calendars}
-                workspaceLoading={workspaceLoading}
-                workspaceMessage={workspaceMessage}
-                settingsMessage={settingsMessage}
-                settingsError={settingsError}
-                calendarDraft={calendarDraft}
-                setCalendarDraft={setCalendarDraft}
-                onCreateCalendar={createCalendar}
-                onUpdateCalendar={updateCalendar}
-                onAskDeleteCalendar={setDeleteCalendarTarget}
-                memberDraft={memberDraft}
-                setMemberDraft={setMemberDraft}
-                onAddMember={addCalendarMember}
-                settings={settings}
-                setSettings={setSettings}
-                notificationPermission={notificationPermission}
-                onNotificationChange={updateNotificationSetting}
-                onAiChange={updateAiSetting}
-                onSaveSettings={saveProfileSettings}
-                onOpenDeleteAccount={() => setDeleteAccountOpen(true)}
-              />
+              <div className="lg:hidden">
+                <SettingsTab
+                  session={session}
+                  calendars={calendars}
+                  workspaceLoading={workspaceLoading}
+                  workspaceMessage={workspaceMessage}
+                  settingsMessage={settingsMessage}
+                  settingsError={settingsError}
+                  calendarDraft={calendarDraft}
+                  setCalendarDraft={setCalendarDraft}
+                  onCreateCalendar={createCalendar}
+                  onUpdateCalendar={updateCalendar}
+                  onAskDeleteCalendar={setDeleteCalendarTarget}
+                  onUpdateMember={updateCalendarMember}
+                  onRemoveMember={removeCalendarMember}
+                  memberDraft={memberDraft}
+                  setMemberDraft={setMemberDraft}
+                  onAddMember={addCalendarMember}
+                  settings={settings}
+                  setSettings={setSettings}
+                  savedSettings={savedSettings}
+                  notificationPermission={notificationPermission}
+                  isMobileDevice={isMobileDevice}
+                  canVibrate={canVibrate}
+                  activeSection={activeSettingsSection}
+                  onSectionChange={selectSettingsSection}
+                  onNotificationChange={updateNotificationSetting}
+                  onRequestNotifications={() =>
+                    void requestNotificationPermission().then(setNotificationPermissionState)
+                  }
+                  onAiChange={updateAiSetting}
+                  onSaveSettings={saveProfileSettings}
+                  onRevertSettings={revertUnsavedSettings}
+                  onOpenDeleteAccount={() => setDeleteAccountOpen(true)}
+                />
+              </div>
             )}
           </section>
           <BottomTabs activeTab={activeTab} setActiveTab={setActiveTab} />
         </section>
 
-        <aside className="hidden min-h-[calc(100dvh-48px)] grid-rows-[auto_1fr] gap-6 lg:grid">
-          <DesktopPanel
-            selectedDate={selectedDate}
-            events={selectedEvents}
-            reminders={selectedReminders}
-            tasks={taskItems}
-            alerts={alertItems}
-          />
+        <aside className="hidden min-h-[calc(100dvh-48px)] grid-rows-[auto_1fr] gap-6 overflow-y-auto lg:grid">
+          {activeTab === "settings" ? (
+            <SettingsTab
+              session={session}
+              calendars={calendars}
+              workspaceLoading={workspaceLoading}
+              workspaceMessage={workspaceMessage}
+              settingsMessage={settingsMessage}
+              settingsError={settingsError}
+              calendarDraft={calendarDraft}
+              setCalendarDraft={setCalendarDraft}
+              onCreateCalendar={createCalendar}
+              onUpdateCalendar={updateCalendar}
+              onAskDeleteCalendar={setDeleteCalendarTarget}
+              onUpdateMember={updateCalendarMember}
+              onRemoveMember={removeCalendarMember}
+              memberDraft={memberDraft}
+              setMemberDraft={setMemberDraft}
+              onAddMember={addCalendarMember}
+              settings={settings}
+              setSettings={setSettings}
+              savedSettings={savedSettings}
+              notificationPermission={notificationPermission}
+              isMobileDevice={isMobileDevice}
+              canVibrate={canVibrate}
+              activeSection={activeSettingsSection}
+              onSectionChange={selectSettingsSection}
+              onNotificationChange={updateNotificationSetting}
+              onRequestNotifications={() =>
+                void requestNotificationPermission().then(setNotificationPermissionState)
+              }
+              onAiChange={updateAiSetting}
+              onSaveSettings={saveProfileSettings}
+              onRevertSettings={revertUnsavedSettings}
+              onOpenDeleteAccount={() => setDeleteAccountOpen(true)}
+            />
+          ) : (
+            <DesktopPanel
+              selectedDate={selectedDate}
+              events={selectedEvents}
+              reminders={selectedReminders}
+              tasks={taskItems}
+              alerts={alertItems}
+            />
+          )}
         </aside>
       </div>
 
@@ -1411,6 +1939,7 @@ export default function CalendarDashboard() {
           onSubmit={saveEvent}
           onSubmitTask={saveTask}
           onAddTag={() => setTagModalOpen(true)}
+          submitting={composerSubmitting}
         />
       )}
       {tagModalOpen && (
@@ -1466,12 +1995,18 @@ export default function CalendarDashboard() {
 
 function Header({
   today,
+  activeTab,
+  activeSettingsSection,
+  onSettingsSectionChange,
   query,
   setQuery,
   onAdd,
   onLogout,
 }: {
   today: Date;
+  activeTab: AppTab;
+  activeSettingsSection: SettingsSectionId;
+  onSettingsSectionChange: (section: SettingsSectionId) => void;
   query: string;
   setQuery: (query: string) => void;
   onAdd: () => void;
@@ -1502,15 +2037,46 @@ function Header({
         Log out
       </button>
 
-      <label className="mt-5 flex h-11 items-center gap-2 rounded-full border border-white/65 bg-white/70 px-4 text-[#7c7c8a] shadow-sm backdrop-blur-xl">
-        <Search size={18} />
-        <input
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-          className="min-w-0 flex-1 bg-transparent text-sm font-medium text-[#1d1d1f] outline-none placeholder:text-[#9b9baa]"
-          placeholder="Search events, notes, places"
-        />
-      </label>
+      {activeTab === "settings" ? (
+        <nav className="mt-5 rounded-[26px] border border-white/65 bg-white/62 p-2 shadow-sm backdrop-blur-xl lg:border-0 lg:bg-transparent lg:p-0 lg:shadow-none">
+          <div className="mb-2 px-2 lg:px-0">
+            <span className="text-xs font-black uppercase tracking-[0.16em] text-[#8e8e93]">
+              Settings
+            </span>
+          </div>
+          <div className="flex gap-2 overflow-x-auto pb-1 lg:flex-col lg:overflow-visible lg:pb-0">
+            {settingsNavigation.map((item) => {
+              const selected = activeSettingsSection === item.id;
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => onSettingsSectionChange(item.id)}
+                  className={[
+                    "shrink-0 rounded-full px-3 py-2 text-left text-xs font-black transition active:scale-95 lg:flex lg:w-full lg:items-center lg:justify-between lg:rounded-2xl lg:px-4 lg:py-3",
+                    selected
+                      ? "bg-[#1d1d1f] text-white shadow-lg shadow-black/15"
+                      : "bg-white/75 text-[#007aff] shadow-sm",
+                  ].join(" ")}
+                >
+                  <span>{item.label}</span>
+                  {selected && <span className="hidden size-2 rounded-full bg-[#7dd3fc] lg:block" />}
+                </button>
+              );
+            })}
+          </div>
+        </nav>
+      ) : (
+        <label className="mt-5 flex h-11 items-center gap-2 rounded-full border border-white/65 bg-white/70 px-4 text-[#7c7c8a] shadow-sm backdrop-blur-xl">
+          <Search size={18} />
+          <input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            className="min-w-0 flex-1 bg-transparent text-sm font-medium text-[#1d1d1f] outline-none placeholder:text-[#9b9baa]"
+            placeholder="Search events, notes, places"
+          />
+        </label>
+      )}
 
     </header>
   );
@@ -1594,7 +2160,7 @@ function TagFilters({
           onClick={() => setActiveCategory(tag.id)}
           className="shrink-0 rounded-full px-4 py-2 text-sm font-semibold shadow-sm transition active:scale-95"
           style={{
-            background: activeCategory === tag.id ? tag.tint : "rgba(255,255,255,.7)",
+            background: activeCategory === tag.id ? `${tag.color}24` : "rgba(255,255,255,.7)",
             color: activeCategory === tag.id ? tag.color : "#7c7c8a",
           }}
         >
@@ -1634,7 +2200,7 @@ function MonthView({
           <span key={`${day}-${index}`}>{day}</span>
         ))}
       </div>
-      <div className="grid grid-cols-7 gap-y-1">
+      <div className="grid grid-cols-7 grid-rows-6 gap-1">
         {days.map((day) => {
           const dayEvents = events.filter((event) => event.date === day.key);
           const selected = sameDate(day.date, selectedDate);
@@ -1644,7 +2210,7 @@ function MonthView({
               key={day.key}
               onClick={() => onSelect(day.date)}
               className={[
-                "mx-auto flex h-12 w-12 flex-col items-center justify-center rounded-2xl text-sm font-bold transition active:scale-95",
+                "mx-auto flex aspect-square w-full max-w-12 flex-col items-center justify-center rounded-2xl text-sm font-bold transition active:scale-95",
                 selected
                   ? "bg-[#1d1d1f] text-white shadow-lg shadow-black/20"
                   : isToday
@@ -1752,7 +2318,7 @@ function DayTimeline({
                 "absolute left-[66px] right-1 rounded-2xl border border-white/70 p-3 text-left shadow-lg backdrop-blur-xl transition active:scale-95",
                 event.status === "cancelled" ? "opacity-55" : "",
               ].join(" ")}
-              style={{ top, background: tag.tint }}
+              style={{ top, background: `${tag.color}26` }}
             >
               <span className="flex items-center justify-between gap-2">
                 <span
@@ -1913,10 +2479,10 @@ function EventCard({
   return (
     <article
       className={[
-        "rounded-[28px] p-4 shadow-xl shadow-black/5 ring-1 ring-white/70 transition",
+        "event-card-shell rounded-[28px] p-4 shadow-xl shadow-black/5 ring-1 ring-white/70 transition",
         cancelled ? "opacity-60 grayscale-[0.25]" : "",
       ].join(" ")}
-      style={{ background: `linear-gradient(135deg, ${tag.tint}, rgba(255,255,255,.94))` }}
+      style={{ background: `linear-gradient(135deg, ${tag.color}22, rgba(255,255,255,.78))` }}
     >
       <div className="flex gap-3">
         <div className="mt-1 h-14 w-1.5 rounded-full" style={{ backgroundColor: tag.color }} />
@@ -2211,7 +2777,7 @@ function StatsTab({
   aiEnabled: boolean;
 }) {
   return (
-    <section className="space-y-4">
+    <section className="space-y-3">
       <SectionTitle eyebrow="Free stats" title="Progress dashboard" count={stats.totalEvents} />
       <div className="grid grid-cols-2 gap-3">
         <Stat label="Events" value={stats.totalEvents} />
@@ -2268,15 +2834,24 @@ function SettingsTab({
   onCreateCalendar,
   onUpdateCalendar,
   onAskDeleteCalendar,
+  onUpdateMember,
+  onRemoveMember,
   memberDraft,
   setMemberDraft,
   onAddMember,
   settings,
   setSettings,
+  savedSettings,
   notificationPermission,
+  isMobileDevice,
+  canVibrate,
+  activeSection,
+  onSectionChange,
   onNotificationChange,
+  onRequestNotifications,
   onAiChange,
   onSaveSettings,
+  onRevertSettings,
   onOpenDeleteAccount,
 }: {
   session: AppSession | null;
@@ -2290,15 +2865,24 @@ function SettingsTab({
   onCreateCalendar: (event: FormEvent<HTMLFormElement>) => void;
   onUpdateCalendar: (calendarId: string, updates: { name?: string; color?: string }) => void;
   onAskDeleteCalendar: (calendar: AppCalendar) => void;
+  onUpdateMember: (calendarId: string, memberId: string, role: "owner" | "editor" | "viewer") => void;
+  onRemoveMember: (calendarId: string, memberId: string) => void;
   memberDraft: { calendarId: string; email: string; role: "editor" | "viewer" };
   setMemberDraft: (draft: { calendarId: string; email: string; role: "editor" | "viewer" }) => void;
   onAddMember: (event: FormEvent<HTMLFormElement>) => void;
   settings: AppSettings;
   setSettings: (settings: AppSettings) => void;
+  savedSettings: AppSettings;
   notificationPermission: string;
+  isMobileDevice: boolean;
+  canVibrate: boolean;
+  activeSection: SettingsSectionId;
+  onSectionChange: (section: SettingsSectionId) => void;
   onNotificationChange: (key: keyof AppSettings["notifications"], value: boolean | string) => void;
+  onRequestNotifications: () => void;
   onAiChange: (key: keyof AiSettings, value: boolean) => void;
   onSaveSettings: () => void;
+  onRevertSettings: () => void;
   onOpenDeleteAccount: () => void;
 }) {
   const selectedCalendar = calendars.find((calendar) => calendar.id === memberDraft.calendarId);
@@ -2307,14 +2891,59 @@ function SettingsTab({
   );
   const memberInviteDisabled = !selectedCalendar || (!selectedCalendar.shared && sharedCalendarUsed);
   const sharedCalendars = calendars.filter((calendar) => calendar.shared);
+  const hasUnsavedSettings = JSON.stringify(settings) !== JSON.stringify(savedSettings);
+  const notificationRows = [
+    ["eventReminders", "Event reminders"],
+    ["taskReminders", "Task reminders"],
+    ["dailyAgenda", "Daily agenda"],
+    ["rescheduleReminders", "Reschedule reminders"],
+    ["birthdayReminders", "Birthday reminders"],
+    ["desktopNotifications", "Desktop notifications"],
+    ...(isMobileDevice ? ([["mobileNotifications", "Mobile/PWA notifications"]] as const) : []),
+    ["quietHours", "Quiet hours"],
+    ["sound", "Sound"],
+    ...(canVibrate ? ([["vibration", "Vibration"]] as const) : []),
+  ] as const;
 
   return (
-    <section className="space-y-4">
+    <section className="space-y-3">
       <SectionTitle eyebrow="Settings" title="Account workspace" count={calendars.length} />
+      {hasUnsavedSettings && (
+        <p className="rounded-2xl bg-[#fff4df] px-4 py-3 text-xs font-bold text-[#9a5b00]">
+          Unsaved changes are only previews. Save to keep them, or leave Settings/switch windows to revert.
+        </p>
+      )}
+      <div className="sticky top-0 z-10 grid grid-cols-2 gap-2 rounded-[24px] bg-white/70 p-2 shadow-lg shadow-black/5 backdrop-blur-xl lg:top-3">
+        <button
+          type="button"
+          onClick={onSaveSettings}
+          className="h-10 rounded-full bg-[#007aff] text-sm font-bold text-white shadow-lg shadow-[#007aff]/25 disabled:opacity-50"
+          disabled={!hasUnsavedSettings && !settingsError}
+        >
+          Save changes
+        </button>
+        <button
+          type="button"
+          onClick={onRevertSettings}
+          className="h-10 rounded-full bg-white/75 text-sm font-bold text-[#636366] shadow-sm disabled:opacity-50"
+          disabled={!hasUnsavedSettings}
+        >
+          Revert
+        </button>
+      </div>
       {workspaceLoading && <p className="rounded-2xl bg-white/70 px-4 py-3 text-sm font-bold text-[#007aff]">Loading account data...</p>}
       {workspaceMessage && <p className="rounded-2xl bg-white/70 px-4 py-3 text-sm font-bold text-[#636366]">{workspaceMessage}</p>}
+      {settingsMessage && <p className="rounded-2xl bg-[#e9fbe9] px-4 py-3 text-sm font-bold text-[#228f3b]">{settingsMessage}</p>}
+      {settingsError && <p className="rounded-2xl bg-[#ffe8e6] px-4 py-3 text-sm font-bold text-[#ff3b30]">{settingsError}</p>}
 
-      <SettingsCard title="Profile" icon={<Users size={18} />}>
+      <SettingsCard
+        id="settings-profile"
+        sectionId="profile"
+        activeSection={activeSection}
+        onSectionChange={onSectionChange}
+        title="Profile"
+        icon={<Users size={18} />}
+      >
         <p className="text-sm font-semibold text-[#636366]">Signed in as {session?.user.email}</p>
         <label className="mt-3 block text-xs font-black uppercase tracking-[0.12em] text-[#8e8e93]">
           General account name
@@ -2328,7 +2957,7 @@ function SettingsTab({
             })
           }
           className="input-shell mt-2 w-full"
-          placeholder="Jessy"
+          placeholder="Your account name"
         />
         <p className="mt-2 text-xs font-bold text-[#8e8e93]">
           This is your default name. You can use different display names inside shared calendars.
@@ -2355,7 +2984,7 @@ function SettingsTab({
                   })
                 }
                 className="input-shell mt-1 w-full"
-                placeholder={settings.profile.accountName || "Yasmin, Jessy B., etc."}
+                placeholder={settings.profile.accountName || "Display name for this calendar"}
               />
             </label>
             ))}
@@ -2363,7 +2992,14 @@ function SettingsTab({
         )}
       </SettingsCard>
 
-      <SettingsCard title="Theme" icon={<Palette size={18} />}>
+      <SettingsCard
+        id="settings-theme"
+        sectionId="theme"
+        activeSection={activeSection}
+        onSectionChange={onSectionChange}
+        title="Theme"
+        icon={<Palette size={18} />}
+      >
         <select
           value={settings.theme}
           onChange={(event) => setSettings({ ...settings, theme: event.target.value as AppSettings["theme"] })}
@@ -2376,19 +3012,16 @@ function SettingsTab({
         <p className="mt-2 text-xs font-bold text-[#8e8e93]">
           Theme is part of the profile save flow. Use Save Settings when you are happy with it.
         </p>
-        <div className="mt-3 grid grid-cols-2 gap-2">
-          <button onClick={onSaveSettings} className="h-11 rounded-full bg-[#007aff] text-sm font-bold text-white shadow-lg shadow-[#007aff]/25">
-            Save settings
-          </button>
-          <button onClick={() => setSettings(defaultSettings)} className="h-11 rounded-full bg-white/75 text-sm font-bold text-[#636366] shadow-sm">
-            Revert draft
-          </button>
-        </div>
-        {settingsMessage && <p className="mt-2 text-sm font-bold text-[#34c759]">{settingsMessage}</p>}
-        {settingsError && <p className="mt-2 text-sm font-bold text-[#ff3b30]">{settingsError}</p>}
       </SettingsCard>
 
-      <SettingsCard title="Calendar Settings" icon={<CalendarDays size={18} />}>
+      <SettingsCard
+        id="settings-calendars"
+        sectionId="calendars"
+        activeSection={activeSection}
+        onSectionChange={onSectionChange}
+        title="Calendar Settings"
+        icon={<CalendarDays size={18} />}
+      >
         <form onSubmit={onCreateCalendar} className="grid grid-cols-[1fr_auto] gap-2">
           <input
             value={calendarDraft.name}
@@ -2411,6 +3044,21 @@ function SettingsTab({
               calendar={calendar}
               onUpdate={onUpdateCalendar}
               onAskDelete={onAskDeleteCalendar}
+              displayName={settings.profile.calendarDisplayNames[calendar.id] ?? ""}
+              onUpdateMember={onUpdateMember}
+              onRemoveMember={onRemoveMember}
+              onChangeDisplayName={(value) =>
+                setSettings({
+                  ...settings,
+                  profile: {
+                    ...settings.profile,
+                    calendarDisplayNames: {
+                      ...settings.profile.calendarDisplayNames,
+                      [calendar.id]: value,
+                    },
+                  },
+                })
+              }
             />
           ))}
         </div>
@@ -2456,21 +3104,35 @@ function SettingsTab({
         </form>
       </SettingsCard>
 
-      <SettingsCard title="Notification Settings" icon={<BellRing size={18} />}>
-        <p className="text-sm font-semibold text-[#636366]">Permission: {notificationPermission}</p>
+      <SettingsCard
+        id="settings-notifications"
+        sectionId="notifications"
+        activeSection={activeSection}
+        onSectionChange={onSectionChange}
+        title="Notification Settings"
+        icon={<BellRing size={18} />}
+      >
+        <div className="rounded-2xl bg-[#f2f2f7] p-3">
+          <p className="text-sm font-bold text-[#1d1d1f]">
+            Permission on this {isMobileDevice ? "mobile/PWA device" : "desktop browser"}: {notificationPermission}
+          </p>
+          <p className="mt-1 text-xs font-bold leading-5 text-[#8e8e93]">
+            {notificationPermission === "granted"
+              ? "Arcgenda can show real reminders while the app is open. Background push still needs a push server before it can work when the app is fully closed."
+              : isMobileDevice
+                ? "Tap Request permission. On iPhone, install Arcgenda to the Home Screen first if Safari does not show a prompt."
+                : "Click Request permission. If no popup appears, use the lock icon in the address bar, open site settings, and allow notifications for Arcgenda."}
+          </p>
+          <button
+            type="button"
+            onClick={onRequestNotifications}
+            className="mt-3 h-10 rounded-full bg-[#007aff] px-4 text-sm font-bold text-white"
+          >
+            Request permission
+          </button>
+        </div>
         <div className="mt-3 grid gap-2">
-          {([
-            ["eventReminders", "Event reminders"],
-            ["taskReminders", "Task reminders"],
-            ["dailyAgenda", "Daily agenda"],
-            ["rescheduleReminders", "Reschedule reminders"],
-            ["birthdayReminders", "Birthday reminders"],
-            ["desktopNotifications", "Desktop notifications"],
-            ["mobileNotifications", "Mobile/PWA notifications"],
-            ["quietHours", "Quiet hours"],
-            ["sound", "Sound"],
-            ["vibration", "Vibration"],
-          ] as const).map(([key, label]) => (
+          {notificationRows.map(([key, label]) => (
             <Toggle
               key={key}
               checked={Boolean(settings.notifications[key])}
@@ -2508,11 +3170,18 @@ function SettingsTab({
           <option value="1 day before">1 day before</option>
         </select>
         <p className="mt-3 text-xs font-bold text-[#8e8e93]">
-          iPhone PWA notifications require iOS support, install-to-home-screen, permission, and a push backend. Full push delivery is not enabled yet.
+          Default timing decides how early event reminders alert you, for example 15 minutes before a meeting. Quiet hours pause reminders between the start and end times so Arcgenda does not interrupt sleep or focus time. Device-only options appear only when this device supports them.
         </p>
       </SettingsCard>
 
-      <SettingsCard title="AI Lite and privacy" icon={<Shield size={18} />}>
+      <SettingsCard
+        id="settings-ai"
+        sectionId="ai"
+        activeSection={activeSection}
+        onSectionChange={onSectionChange}
+        title="AI Lite and privacy"
+        icon={<Shield size={18} />}
+      >
         {([
           ["enabled", "Enable AI Lite"],
           ["scheduling", "Smart scheduling suggestions"],
@@ -2533,7 +3202,14 @@ function SettingsTab({
         </p>
       </SettingsCard>
 
-      <SettingsCard title="Sync & Export" icon={<Smartphone size={18} />}>
+      <SettingsCard
+        id="settings-sync"
+        sectionId="sync"
+        activeSection={activeSection}
+        onSectionChange={onSectionChange}
+        title="Sync & Export"
+        icon={<Smartphone size={18} />}
+      >
         <div className="grid gap-2">
           <PlaceholderRow title="Google Calendar sync" />
           <PlaceholderRow title="Outlook Calendar sync" />
@@ -2542,19 +3218,40 @@ function SettingsTab({
         </div>
       </SettingsCard>
 
-      <SettingsCard title="Pro Preview" icon={<Sparkles size={18} />}>
+      <SettingsCard
+        id="settings-pro"
+        sectionId="pro"
+        activeSection={activeSection}
+        onSectionChange={onSectionChange}
+        title="Pro Preview"
+        icon={<Sparkles size={18} />}
+      >
         <div className="grid grid-cols-2 gap-3">
           <PlanCard title="Free" body="3 calendars, 1 shared calendar, local AI Lite." />
           <PlanCard title="Pro preview" body="More calendars, deeper sync, payments coming soon." />
         </div>
       </SettingsCard>
 
-      <SettingsCard title="Account" icon={<Shield size={18} />}>
+      <SettingsCard
+        id="settings-account"
+        sectionId="account"
+        activeSection={activeSection}
+        onSectionChange={onSectionChange}
+        title="Account"
+        icon={<Shield size={18} />}
+      >
         <PlaceholderRow title="Email managed by Supabase Auth" />
         <PlaceholderRow title="Password reset flow coming soon" />
       </SettingsCard>
 
-      <SettingsCard title="Danger Zone" icon={<Trash2 size={18} />}>
+      <SettingsCard
+        id="settings-danger"
+        sectionId="danger"
+        activeSection={activeSection}
+        onSectionChange={onSectionChange}
+        title="Danger Zone"
+        icon={<Trash2 size={18} />}
+      >
         <p className="text-sm font-semibold leading-6 text-[#636366]">
           Destructive actions are separated from profile settings so they are harder to hit by accident.
         </p>
@@ -2566,7 +3263,14 @@ function SettingsTab({
         </button>
       </SettingsCard>
 
-      <SettingsCard title="App, feedback, and legal" icon={<Sparkles size={18} />}>
+      <SettingsCard
+        id="settings-links"
+        sectionId="links"
+        activeSection={activeSection}
+        onSectionChange={onSectionChange}
+        title="App, feedback, and legal"
+        icon={<Sparkles size={18} />}
+      >
         <div className="grid grid-cols-2 gap-2">
           <SettingsLink href="/get-app" label="Get App" />
           <SettingsLink href="/help" label="Help" />
@@ -2585,16 +3289,32 @@ function CalendarManagementRow({
   calendar,
   onUpdate,
   onAskDelete,
+  displayName,
+  onChangeDisplayName,
+  onUpdateMember,
+  onRemoveMember,
 }: {
   calendar: AppCalendar;
   onUpdate: (calendarId: string, updates: { name?: string; color?: string }) => void;
   onAskDelete: (calendar: AppCalendar) => void;
+  displayName: string;
+  onChangeDisplayName: (value: string) => void;
+  onUpdateMember: (calendarId: string, memberId: string, role: "owner" | "editor" | "viewer") => void;
+  onRemoveMember: (calendarId: string, memberId: string) => void;
 }) {
   const [name, setName] = useState(calendar.name);
   const [color, setColor] = useState(calendar.color);
 
   const canDelete = calendar.role === "owner";
   const canEdit = calendar.role === "owner";
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setName(calendar.name);
+      setColor(calendar.color);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [calendar.color, calendar.name]);
 
   return (
     <article className="rounded-[24px] bg-white/70 p-3 shadow-lg shadow-black/5">
@@ -2653,12 +3373,56 @@ function CalendarManagementRow({
         </div>
       )}
 
+      {calendar.shared && (
+        <label className="mt-3 block">
+          <span className="text-xs font-black text-[#8e8e93]">My display name in this calendar</span>
+          <input
+            value={displayName}
+            onChange={(event) => onChangeDisplayName(event.target.value)}
+            className="input-shell mt-1 h-11 w-full"
+            placeholder="Display name for this calendar"
+          />
+        </label>
+      )}
+
       {calendar.members.length > 0 && (
-        <div className="mt-3 space-y-1">
-          {calendar.members.slice(0, 3).map((member) => (
-            <p key={member.id} className="text-xs font-bold text-[#8e8e93]">
-              {member.displayName || member.email} · {member.role} · {member.status}
-            </p>
+        <div className="mt-3 space-y-2">
+          {calendar.members.map((member) => (
+            <div key={member.id} className="grid gap-2 rounded-2xl bg-[#f2f2f7] p-2 text-xs font-bold text-[#8e8e93] sm:grid-cols-[1fr_auto_auto] sm:items-center">
+              <span className="min-w-0 truncate">
+                {member.displayName || member.email} · {member.status}
+              </span>
+              {canEdit && member.role !== "owner" ? (
+                <>
+                  <select
+                    value={member.role}
+                    onChange={(event) =>
+                      onUpdateMember(
+                        calendar.id,
+                        member.id,
+                        event.target.value as "owner" | "editor" | "viewer",
+                      )
+                    }
+                    className="h-9 rounded-xl bg-white px-2 text-xs font-bold"
+                  >
+                    <option value="viewer">Viewer</option>
+                    <option value="editor">Editor</option>
+                    {member.userId && <option value="owner">Make owner</option>}
+                  </select>
+                  <button
+                    type="button"
+                    onClick={() => onRemoveMember(calendar.id, member.id)}
+                    className="h-9 rounded-xl bg-[#ffe8e6] px-3 text-xs font-black text-[#ff3b30]"
+                  >
+                    Remove
+                  </button>
+                </>
+              ) : (
+                <span className="rounded-full bg-white/75 px-3 py-2 text-center text-xs font-black capitalize">
+                  {member.role}
+                </span>
+              )}
+            </div>
           ))}
         </div>
       )}
@@ -2686,6 +3450,7 @@ function EventComposer({
   onSubmit,
   onSubmitTask,
   onAddTag,
+  submitting,
 }: {
   draft: EventDraft;
   editing: boolean;
@@ -2706,12 +3471,13 @@ function EventComposer({
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
   onSubmitTask: (event: FormEvent<HTMLFormElement>) => void;
   onAddTag: () => void;
+  submitting: boolean;
 }) {
   const writableCalendars = calendars.filter((calendar) => calendar.role !== "viewer");
 
   return (
     <ModalShell>
-      <form onSubmit={kind === "event" ? onSubmit : onSubmitTask} className="w-full max-w-md rounded-[32px] border border-white/70 bg-white/88 p-4 shadow-2xl shadow-black/20 backdrop-blur-2xl">
+      <form onSubmit={kind === "event" ? onSubmit : onSubmitTask} className="max-h-[calc(100dvh-24px)] w-full max-w-md overflow-y-auto rounded-[32px] border border-white/70 bg-white/88 p-4 shadow-2xl shadow-black/20 backdrop-blur-2xl">
         <ModalHeader title={editing ? "Edit event" : "Create"} onClose={onClose} />
         {!editing && (
           <div className="mb-4 grid grid-cols-2 rounded-full bg-[#f2f2f7] p-1 text-sm font-bold">
@@ -2732,82 +3498,106 @@ function EventComposer({
         )}
         {kind === "task" && !editing ? (
           <div className="space-y-3">
-            <input
-              value={taskDraft.title}
-              onChange={(event) => setTaskDraft({ ...taskDraft, title: event.target.value })}
-              className="input-shell w-full text-base"
-              placeholder="Task title"
-              required
-            />
-            <div className="grid grid-cols-2 gap-3">
+            <FieldLabel label="Task name" helper="What do you need to do?">
               <input
-                type="date"
-                value={taskDraft.reminderDate}
-                onChange={(event) => setTaskDraft({ ...taskDraft, reminderDate: event.target.value })}
-                className="input-shell"
+                value={taskDraft.title}
+                onChange={(event) => setTaskDraft({ ...taskDraft, title: event.target.value })}
+                className="input-shell w-full text-base"
+                placeholder="Example: Prepare notes"
+                required
               />
-              <AppleTimePicker
-                value={taskDraft.reminderTime}
-                onChange={(time) => setTaskDraft({ ...taskDraft, reminderTime: time })}
-              />
+            </FieldLabel>
+            <div className="grid grid-cols-2 gap-3">
+              <FieldLabel label="Due date">
+                <input
+                  type="date"
+                  value={taskDraft.reminderDate}
+                  onChange={(event) => setTaskDraft({ ...taskDraft, reminderDate: event.target.value })}
+                  className="input-shell w-full"
+                />
+              </FieldLabel>
+              <FieldLabel label="Reminder time">
+                <AppleTimePicker
+                  value={taskDraft.reminderTime}
+                  onChange={(time) => setTaskDraft({ ...taskDraft, reminderTime: time })}
+                />
+              </FieldLabel>
             </div>
-            <select
-              value={taskDraft.eventId}
-              onChange={(event) => setTaskDraft({ ...taskDraft, eventId: event.target.value })}
-              className="input-shell w-full"
-            >
-              <option value="none">No event</option>
-              {events.map((event) => (
-                <option key={event.id} value={event.id}>
-                  Bind to: {event.title}
-                </option>
-              ))}
-            </select>
-            <button className="mt-4 h-12 w-full rounded-full bg-[#007aff] text-base font-bold text-white shadow-lg shadow-[#007aff]/25 transition active:scale-95">
-              Create task
+            <FieldLabel label="Link to event" helper="Optional. Leave this as no event for a standalone task.">
+              <select
+                value={taskDraft.eventId}
+                onChange={(event) => setTaskDraft({ ...taskDraft, eventId: event.target.value })}
+                className="input-shell w-full"
+              >
+                <option value="none">No event</option>
+                {events.map((event) => (
+                  <option key={event.id} value={event.id}>
+                    Bind to: {event.title}
+                  </option>
+                ))}
+              </select>
+            </FieldLabel>
+            <button disabled={submitting} className="mt-4 h-12 w-full rounded-full bg-[#007aff] text-base font-bold text-white shadow-lg shadow-[#007aff]/25 transition active:scale-95 disabled:opacity-55">
+              {submitting ? "Creating..." : "Create task"}
             </button>
           </div>
         ) : (
         <>
           <div className="space-y-3">
-          <input value={draft.title} onChange={(event) => onChange({ ...draft, title: event.target.value })} className="input-shell text-base" placeholder="Event title" required />
+          <FieldLabel label="Event name" helper="The title shown on your calendar.">
+            <input value={draft.title} onChange={(event) => onChange({ ...draft, title: event.target.value })} className="input-shell w-full text-base" placeholder="Example: Study focus" required />
+          </FieldLabel>
           <div className="grid grid-cols-2 gap-3">
-            <input type="date" value={draft.date} onChange={(event) => onChange({ ...draft, date: event.target.value })} className="input-shell" />
-            <AppleTimePicker
-              value={draft.time}
-              disabled={draft.allDay}
-              onChange={(time) => onChange({ ...draft, time })}
-            />
+            <FieldLabel label="Date">
+              <input type="date" value={draft.date} onChange={(event) => onChange({ ...draft, date: event.target.value })} className="input-shell w-full" />
+            </FieldLabel>
+            <FieldLabel label="Time">
+              <AppleTimePicker
+                value={draft.time}
+                disabled={draft.allDay}
+                onChange={(time) => onChange({ ...draft, time })}
+              />
+            </FieldLabel>
           </div>
           <div className="grid grid-cols-[1fr_auto] gap-3">
-            <select value={draft.category} onChange={(event) => onChange({ ...draft, category: event.target.value })} className="input-shell">
-              {tags.map((tag) => (
-                <option key={tag.id} value={tag.id}>{tag.label}</option>
-              ))}
-            </select>
-            <button type="button" className="grid size-12 place-items-center rounded-2xl bg-[#f2f2f7] text-[#007aff]" onClick={onAddTag} aria-label="Add tag">
+            <FieldLabel label="Tag">
+              <select value={draft.category} onChange={(event) => onChange({ ...draft, category: event.target.value })} className="input-shell w-full">
+                {tags.map((tag) => (
+                  <option key={tag.id} value={tag.id}>{tag.label}</option>
+                ))}
+              </select>
+            </FieldLabel>
+            <button type="button" className="mt-6 grid size-12 place-items-center rounded-2xl bg-[#f2f2f7] text-[#007aff]" onClick={onAddTag} aria-label="Add tag">
               <Palette size={19} />
             </button>
           </div>
-          <select
-            value={draft.calendarId ?? "personal"}
-            onChange={(event) => onChange({ ...draft, calendarId: event.target.value })}
-            className="input-shell capitalize"
-          >
-            {writableCalendars.map((calendar) => (
-              <option key={calendar.id} value={calendar.id}>
-                {calendar.name}{calendar.shared ? " (shared)" : ""}
-              </option>
-            ))}
-          </select>
+          <FieldLabel label={editing ? "Move to calendar" : "Calendar"} helper="Choose the calendar space this event belongs to.">
+            <select
+              value={draft.calendarId ?? "personal"}
+              onChange={(event) => onChange({ ...draft, calendarId: event.target.value })}
+              className="input-shell w-full capitalize"
+            >
+              {writableCalendars.map((calendar) => (
+                <option key={calendar.id} value={calendar.id}>
+                  {calendar.name}{calendar.shared ? " (shared)" : ""}
+                </option>
+              ))}
+            </select>
+          </FieldLabel>
           <p className="text-xs font-bold text-[#8e8e93]">
             Move to calendar: viewers cannot move shared events. Linked tasks and reminders stay attached.
           </p>
-          <select value={draft.recurrence} onChange={(event) => onChange({ ...draft, recurrence: event.target.value as Recurrence })} className="input-shell capitalize">
-            {recurrences.map((recurrence) => <option key={recurrence} value={recurrence}>{recurrence}</option>)}
-          </select>
-          <input value={draft.location} onChange={(event) => onChange({ ...draft, location: event.target.value })} className="input-shell" placeholder="Location" />
-          <textarea value={draft.notes} onChange={(event) => onChange({ ...draft, notes: event.target.value })} className="min-h-20 w-full resize-none rounded-2xl bg-[#f2f2f7] px-4 py-3 text-sm font-semibold outline-none" placeholder="Notes" />
+          <FieldLabel label="Repeat">
+            <select value={draft.recurrence} onChange={(event) => onChange({ ...draft, recurrence: event.target.value as Recurrence })} className="input-shell w-full capitalize">
+              {recurrences.map((recurrence) => <option key={recurrence} value={recurrence}>{recurrence}</option>)}
+            </select>
+          </FieldLabel>
+          <FieldLabel label="Location" helper="Optional place, room, or link label.">
+            <input value={draft.location} onChange={(event) => onChange({ ...draft, location: event.target.value })} className="input-shell w-full" placeholder="Example: Library, Zoom, Home" />
+          </FieldLabel>
+          <FieldLabel label="Notes" helper="Optional details for future you.">
+            <textarea value={draft.notes} onChange={(event) => onChange({ ...draft, notes: event.target.value })} className="min-h-20 w-full resize-none rounded-2xl bg-[#f2f2f7] px-4 py-3 text-sm font-semibold outline-none" placeholder="Add notes, links, or context" />
+          </FieldLabel>
           <div className="grid grid-cols-2 gap-3">
             <Toggle checked={draft.allDay} label="All day" onClick={() => onChange({ ...draft, allDay: !draft.allDay })} />
             <Toggle checked={draft.pinned} label="Pinned" onClick={() => onChange({ ...draft, pinned: !draft.pinned })} />
@@ -2869,8 +3659,8 @@ function EventComposer({
             </div>
           )}
         </div>
-          <button className="mt-4 h-12 w-full rounded-full bg-[#007aff] text-base font-bold text-white shadow-lg shadow-[#007aff]/25 transition active:scale-95">
-            {editing ? "Save changes" : "Create event"}
+          <button disabled={submitting} className="mt-4 h-12 w-full rounded-full bg-[#007aff] text-base font-bold text-white shadow-lg shadow-[#007aff]/25 transition active:scale-95 disabled:opacity-55">
+            {submitting ? (editing ? "Saving..." : "Creating...") : editing ? "Save changes" : "Create event"}
           </button>
         </>
         )}
@@ -2966,6 +3756,26 @@ function AppleTimePicker({
         ))}
       </select>
     </div>
+  );
+}
+
+function FieldLabel({
+  label,
+  helper,
+  children,
+}: {
+  label: string;
+  helper?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <label className="block">
+      <span className="mb-1 block text-xs font-black uppercase tracking-[0.12em] text-[#8e8e93]">
+        {label}
+      </span>
+      {children}
+      {helper && <span className="mt-1 block text-xs font-bold text-[#8e8e93]">{helper}</span>}
+    </label>
   );
 }
 
@@ -3260,21 +4070,46 @@ function Stat({ label, value }: { label: string; value: number }) {
 }
 
 function SettingsCard({
+  id,
+  sectionId,
+  activeSection,
+  onSectionChange,
   title,
   icon,
   children,
 }: {
+  id?: string;
+  sectionId: SettingsSectionId;
+  activeSection: SettingsSectionId;
+  onSectionChange: (section: SettingsSectionId) => void;
   title: string;
   icon: React.ReactNode;
   children: React.ReactNode;
 }) {
+  const open = activeSection === sectionId;
+
   return (
-    <article className="rounded-[28px] border border-white/60 bg-white/70 p-4 shadow-lg shadow-black/5 backdrop-blur-xl">
-      <div className="mb-3 flex items-center gap-2 text-[#007aff]">
-        {icon}
-        <h3 className="text-base font-bold text-[#1d1d1f]">{title}</h3>
-      </div>
-      {children}
+    <article
+      id={id}
+      className={[
+        "rounded-[24px] border p-3 shadow-lg shadow-black/5 backdrop-blur-xl transition",
+        open ? "border-[#007aff]/25 bg-white/76" : "border-white/60 bg-white/52",
+      ].join(" ")}
+    >
+      <button
+        type="button"
+        onClick={() => onSectionChange(sectionId)}
+        className="flex w-full items-center justify-between gap-3 text-left text-[#007aff]"
+      >
+        <span className="flex items-center gap-2">
+          {icon}
+          <h3 className="text-base font-bold text-[#1d1d1f]">{title}</h3>
+        </span>
+        <span className="rounded-full bg-white/70 px-2 py-1 text-[11px] font-black text-[#8e8e93]">
+          {open ? "Selected" : "Open"}
+        </span>
+      </button>
+      {open && <div className="mt-3">{children}</div>}
     </article>
   );
 }

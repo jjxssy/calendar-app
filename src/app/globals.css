@@ -162,6 +162,11 @@ html[data-theme="dark"] select {
   color: #f7f7fb;
 }
 
+html.dark .event-card-shell,
+html[data-theme="dark"] .event-card-shell {
+  background: linear-gradient(135deg, rgba(109, 93, 252, 0.18), rgba(39, 39, 42, 0.84)) !important;
+}
+
 .nav-circle {
   display: grid;
   width: 2.5rem;

@@ -7,7 +7,7 @@ export type AppCalendar = {
   visible: boolean;
   shared: boolean;
   role: "owner" | "editor" | "viewer";
-  members: Array<{ id: string; email: string; displayName?: string; role: "owner" | "editor" | "viewer"; status: "pending" | "accepted" }>;
+  members: Array<{ id: string; userId?: string | null; email: string; displayName?: string; role: "owner" | "editor" | "viewer"; status: "pending" | "accepted" }>;
 };
 
 export type NotificationSettings = {

@@ -55,12 +55,13 @@ export default function RootLayout({
     <html
       lang="en"
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+      suppressHydrationWarning
     >
       <body className="min-h-full flex flex-col">
         <script
           dangerouslySetInnerHTML={{
             __html:
-              "try{var t=localStorage.getItem('arcgenda-theme-hydration');if(t==='dark'){document.documentElement.classList.add('dark');document.documentElement.dataset.theme='dark'}else if(t){document.documentElement.dataset.theme=t}}catch(e){}",
+              "try{var t=localStorage.getItem('arcgenda-theme-hydration')||'system';var d=t==='dark'||(t==='system'&&window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches);document.documentElement.dataset.theme=t;document.documentElement.classList.toggle('dark',d)}catch(e){}",
           }}
         />
         {children}
