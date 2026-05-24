@@ -86,17 +86,43 @@ self.addEventListener("fetch", function (event) {
 
 self.addEventListener("notificationclick", function (event) {
   event.notification.close();
+  const targetUrl = event.notification.data && event.notification.data.url
+    ? event.notification.data.url
+    : "/calendar";
   event.waitUntil(
     self.clients.matchAll({ type: "window", includeUncontrolled: true }).then(function (clients) {
       for (const client of clients) {
-        if ("focus" in client) {
+        const clientUrl = new URL(client.url);
+        if ("focus" in client && clientUrl.pathname === targetUrl) {
           return client.focus();
         }
       }
       if (self.clients.openWindow) {
-        return self.clients.openWindow("/calendar");
+        return self.clients.openWindow(targetUrl);
       }
       return undefined;
     }),
   );
+});
+
+self.addEventListener("push", function (event) {
+  let payload = {
+    title: "Arcgenda",
+    options: {
+      body: "You have a calendar reminder.",
+      icon: "/icons/arcgenda-icon-192.png",
+      badge: "/icons/arcgenda-icon-192.png",
+      data: { url: "/calendar" },
+    },
+  };
+
+  if (event.data) {
+    try {
+      payload = event.data.json();
+    } catch {
+      payload.options.body = event.data.text();
+    }
+  }
+
+  event.waitUntil(self.registration.showNotification(payload.title, payload.options));
 });

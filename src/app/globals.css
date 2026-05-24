@@ -3,6 +3,14 @@
 :root {
   --background: #f6f4ff;
   --foreground: #1d1d1f;
+  --surface: rgba(255, 255, 255, 0.72);
+  --surface-strong: rgba(255, 255, 255, 0.88);
+  --surface-muted: #f2f2f7;
+  --muted: #636366;
+  --muted-strong: #8e8e93;
+  --border-soft: rgba(0, 0, 0, 0.08);
+  --accent: #007aff;
+  --danger: #ff3b30;
 }
 
 @theme inline {
@@ -10,13 +18,6 @@
   --color-foreground: var(--foreground);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #000000;
-    --foreground: #f5f5f7;
-  }
 }
 
 * {
@@ -108,8 +109,16 @@ button {
 html.dark,
 html[data-theme="dark"] {
   color-scheme: dark;
-  --background: #18181b;
+  --background: #15151a;
   --foreground: #f7f7fb;
+  --surface: rgba(38, 38, 46, 0.7);
+  --surface-strong: rgba(48, 48, 58, 0.86);
+  --surface-muted: rgba(32, 32, 40, 0.86);
+  --muted: #cbcbd8;
+  --muted-strong: #aaaabe;
+  --border-soft: rgba(255, 255, 255, 0.13);
+  --accent: #8ec5ff;
+  --danger: #ff8a80;
 }
 
 html.dark body,
@@ -117,54 +126,58 @@ html[data-theme="dark"] body {
   background:
     radial-gradient(circle at top left, rgba(255, 155, 210, 0.18), transparent 34rem),
     radial-gradient(circle at top right, rgba(125, 211, 252, 0.18), transparent 32rem),
-    #18181b;
+    var(--background);
   color: #f7f7fb;
 }
 
-html.dark [class*="bg-[#f6f4ff]"],
-html.dark [class*="bg-[#f8f7ff]"],
-html.dark [class*="bg-[#f2f2f7]"],
-html[data-theme="dark"] [class*="bg-[#f6f4ff]"],
-html[data-theme="dark"] [class*="bg-[#f8f7ff]"],
-html[data-theme="dark"] [class*="bg-[#f2f2f7]"] {
-  background-color: rgba(39, 39, 42, 0.78) !important;
+html[data-theme="dark"] main,
+html[data-theme="dark"] article,
+html[data-theme="dark"] aside,
+html[data-theme="dark"] form,
+html[data-theme="dark"] dialog,
+html[data-theme="dark"] .nav-circle,
+html[data-theme="dark"] .event-card-shell {
+  border-color: var(--border-soft);
 }
 
-html.dark [class*="bg-white"],
-html[data-theme="dark"] [class*="bg-white"] {
-  background-color: rgba(39, 39, 42, 0.66) !important;
-  border-color: rgba(255, 255, 255, 0.12) !important;
+html[data-theme="dark"] article,
+html[data-theme="dark"] aside,
+html[data-theme="dark"] .nav-circle {
+  background: var(--surface);
+  backdrop-filter: blur(22px);
 }
 
-html.dark [class*="text-[#18181b]"],
-html.dark [class*="text-[#1d1d1f]"],
-html[data-theme="dark"] [class*="text-[#18181b]"],
-html[data-theme="dark"] [class*="text-[#1d1d1f]"] {
-  color: #f7f7fb !important;
+html[data-theme="dark"] h1,
+html[data-theme="dark"] h2,
+html[data-theme="dark"] h3,
+html[data-theme="dark"] h4,
+html[data-theme="dark"] p,
+html[data-theme="dark"] label,
+html[data-theme="dark"] span {
+  color: var(--foreground);
 }
 
-html.dark [class*="text-[#636366]"],
-html.dark [class*="text-[#7c7c8a]"],
-html.dark [class*="text-[#8e8e93]"],
-html[data-theme="dark"] [class*="text-[#636366]"],
-html[data-theme="dark"] [class*="text-[#7c7c8a]"],
-html[data-theme="dark"] [class*="text-[#8e8e93]"] {
-  color: #c7c7d1 !important;
+html[data-theme="dark"] small,
+html[data-theme="dark"] time {
+  color: var(--muted);
 }
 
-html.dark input,
-html.dark textarea,
-html.dark select,
 html[data-theme="dark"] input,
 html[data-theme="dark"] textarea,
-html[data-theme="dark"] select {
-  background-color: rgba(24, 24, 27, 0.72) !important;
-  color: #f7f7fb;
+html[data-theme="dark"] select,
+html[data-theme="dark"] .input-shell {
+  background: var(--surface-muted);
+  color: var(--foreground);
+  border: 1px solid var(--border-soft);
 }
 
-html.dark .event-card-shell,
+html[data-theme="dark"] input::placeholder,
+html[data-theme="dark"] textarea::placeholder {
+  color: var(--muted-strong);
+}
+
 html[data-theme="dark"] .event-card-shell {
-  background: linear-gradient(135deg, rgba(109, 93, 252, 0.18), rgba(39, 39, 42, 0.84)) !important;
+  background: linear-gradient(135deg, rgba(142, 197, 255, 0.18), rgba(244, 184, 255, 0.12)), var(--surface);
 }
 
 .nav-circle {
@@ -173,8 +186,8 @@ html[data-theme="dark"] .event-card-shell {
   height: 2.5rem;
   place-items: center;
   border-radius: 9999px;
-  background: rgba(255, 255, 255, 0.7);
-  color: #007aff;
+  background: var(--surface);
+  color: var(--accent);
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
   backdrop-filter: blur(18px);
   transition: transform 160ms ease;
@@ -187,7 +200,7 @@ html[data-theme="dark"] .event-card-shell {
 .input-shell {
   height: 3rem;
   border-radius: 1rem;
-  background: #f2f2f7;
+  background: var(--surface-muted);
   padding-inline: 1rem;
   font-size: 0.875rem;
   font-weight: 600;

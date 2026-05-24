@@ -52,11 +52,13 @@ export async function DELETE(_request: Request, context: { params: Promise<{ id:
   try {
     const user = await requireUser();
     const { id, memberId } = await context.params;
-    await ensureOwnedCalendar(user.id, id);
 
     const member = await prisma.calendarMember.findFirst({ where: { id: memberId, calendarId: id } });
     if (!member) throw new ApiError("Calendar member not found.", 404);
     if (member.role === "owner") throw new ApiError("The owner cannot be removed here.", 400);
+
+    const isSelf = member.userId === user.id;
+    if (!isSelf) await ensureOwnedCalendar(user.id, id);
 
     await prisma.$transaction(async (tx) => {
       await tx.calendarMember.delete({ where: { id: memberId } });
@@ -64,8 +66,8 @@ export async function DELETE(_request: Request, context: { params: Promise<{ id:
         data: {
           calendarId: id,
           userId: user.id,
-          action: "calendar.member_removed",
-          details: `Removed ${member.email}`,
+          action: isSelf ? "calendar.member_left" : "calendar.member_removed",
+          details: isSelf ? `${member.email} left the calendar` : `Removed ${member.email}`,
         },
       });
     });

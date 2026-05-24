@@ -54,6 +54,8 @@ model User {
   eventShares EventShare[]
   activityEntries ActivityHistory[]
   notificationPreference NotificationPreference?
+  pushSubscriptions PushSubscription[]
+  notificationDeliveries NotificationDelivery[]
   events    Event[]
   tasks     Task[]
   categories Category[]
@@ -143,6 +145,7 @@ model Event {
   reminders          Reminder[]
   shares             EventShare[]
   activity           ActivityHistory[]
+  notificationDeliveries NotificationDelivery[]
 
   @@index([userId, startDate])
   @@index([userId, status])
@@ -165,6 +168,7 @@ model Task {
   user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   event       Event?    @relation(fields: [eventId], references: [id], onDelete: SetNull)
   reminders   Reminder[]
+  notificationDeliveries NotificationDelivery[]
 
   @@index([userId])
   @@index([eventId])
@@ -178,16 +182,38 @@ model Reminder {
   title     String
   remindAt  DateTime
   completed Boolean  @default(false)
+  notificationSentAt DateTime?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   event     Event?   @relation(fields: [eventId], references: [id], onDelete: SetNull)
   task      Task?    @relation(fields: [taskId], references: [id], onDelete: SetNull)
+  notificationDeliveries NotificationDelivery[]
 
   @@index([userId, remindAt])
+  @@index([notificationSentAt])
   @@index([eventId])
   @@index([taskId])
+}
+
+model NotificationDelivery {
+  id          String   @id @default(cuid())
+  userId      String
+  eventId     String?
+  taskId      String?
+  reminderId  String?
+  type        String
+  key         String
+  deliveredAt DateTime @default(now())
+
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  event       Event?   @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  task        Task?    @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  reminder    Reminder? @relation(fields: [reminderId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, key])
+  @@index([userId, deliveredAt])
 }
 
 model EventShare {
@@ -250,6 +276,24 @@ model NotificationPreference {
   updatedAt             DateTime @updatedAt
 
   user                  User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model PushSubscription {
+  id          String    @id @default(cuid())
+  userId      String
+  endpoint    String    @unique
+  p256dh      String
+  auth        String
+  userAgent   String?
+  deviceLabel String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  revokedAt   DateTime?
+
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([revokedAt])
 }
 
 model Feedback {

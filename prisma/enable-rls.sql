@@ -5,9 +5,11 @@ alter table public."Event" enable row level security;
 alter table public."Category" enable row level security;
 alter table public."Task" enable row level security;
 alter table public."Reminder" enable row level security;
+alter table public."NotificationDelivery" enable row level security;
 alter table public."EventShare" enable row level security;
 alter table public."ActivityHistory" enable row level security;
 alter table public."NotificationPreference" enable row level security;
+alter table public."PushSubscription" enable row level security;
 alter table public."Feedback" enable row level security;
 
 drop policy if exists "Users can manage own user row" on public."User";
@@ -118,6 +120,21 @@ with check ("userId" = (select auth.uid())::text);
 drop policy if exists "Users can manage own notification preferences" on public."NotificationPreference";
 create policy "Users can manage own notification preferences"
 on public."NotificationPreference"
+for all
+to authenticated
+using ("userId" = (select auth.uid())::text)
+with check ("userId" = (select auth.uid())::text);
+
+drop policy if exists "Users can read own notification deliveries" on public."NotificationDelivery";
+create policy "Users can read own notification deliveries"
+on public."NotificationDelivery"
+for select
+to authenticated
+using ("userId" = (select auth.uid())::text);
+
+drop policy if exists "Users can manage own push subscriptions" on public."PushSubscription";
+create policy "Users can manage own push subscriptions"
+on public."PushSubscription"
 for all
 to authenticated
 using ("userId" = (select auth.uid())::text)

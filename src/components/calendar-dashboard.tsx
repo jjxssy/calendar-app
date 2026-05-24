@@ -27,7 +27,6 @@ import {
   Users,
   X,
 } from "lucide-react";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   FormEvent,
@@ -87,9 +86,7 @@ type SettingsSectionId =
   | "ai"
   | "sync"
   | "pro"
-  | "account"
-  | "danger"
-  | "links";
+  | "danger";
 
 type EventDraft = Pick<
   CalendarEvent,
@@ -232,10 +229,8 @@ const settingsNavigation: Array<{ id: SettingsSectionId; label: string }> = [
   { id: "theme", label: "Theme" },
   { id: "ai", label: "AI & Privacy" },
   { id: "sync", label: "Sync & Export" },
-  { id: "pro", label: "Pro" },
-  { id: "account", label: "Account" },
+  { id: "pro", label: "Pro Preview" },
   { id: "danger", label: "Danger" },
-  { id: "links", label: "Links" },
 ];
 const colorGrid = [
   "#007aff",
@@ -269,6 +264,19 @@ function requestNotificationPermission() {
       ? Notification.permission
       : "unsupported",
   );
+}
+
+function urlBase64ToUint8Array(value: string) {
+  const padding = "=".repeat((4 - (value.length % 4)) % 4);
+  const base64 = `${value}${padding}`.replace(/-/g, "+").replace(/_/g, "/");
+  const rawData = window.atob(base64);
+  return Uint8Array.from([...rawData].map((char) => char.charCodeAt(0)));
+}
+
+async function registerServiceWorker() {
+  if (!("serviceWorker" in navigator)) return null;
+  const registration = await navigator.serviceWorker.register("/sw.js");
+  return registration;
 }
 
 async function showArcgendaNotification(body: string, vibrate: boolean) {
@@ -446,6 +454,11 @@ function isQuietTime(settings: NotificationSettings, now = new Date()) {
   return start <= end ? current >= start && current <= end : current >= start || current <= end;
 }
 
+function deviceNotificationsEnabled(settings: NotificationSettings) {
+  const mobileDevice = detectMobileDevice();
+  return mobileDevice ? settings.mobileNotifications : settings.desktopNotifications;
+}
+
 function detectMobileDevice() {
   if (typeof navigator === "undefined") return false;
   return /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
@@ -580,6 +593,10 @@ export default function CalendarDashboard() {
   const [composerSubmitting, setComposerSubmitting] = useState(false);
   const [busyActions, setBusyActions] = useState<Set<string>>(() => new Set());
   const [notificationPermissionState, setNotificationPermissionState] = useState("unsupported");
+  const [pushStatus, setPushStatus] = useState("Checking push support...");
+  const [pushSubscribed, setPushSubscribed] = useState(false);
+  const [pushConfigured, setPushConfigured] = useState(false);
+  const [notificationActionMessage, setNotificationActionMessage] = useState("");
   const [isMobileDevice, setIsMobileDevice] = useState(false);
   const [canVibrate, setCanVibrate] = useState(false);
   const [deleteCalendarTarget, setDeleteCalendarTarget] = useState<AppCalendar | null>(null);
@@ -855,11 +872,134 @@ export default function CalendarDashboard() {
     }
   }
 
+  async function refreshPushStatus() {
+    if (!isAuthed) return;
+    if (!("serviceWorker" in navigator) || !("PushManager" in window) || !("Notification" in window)) {
+      setPushConfigured(false);
+      setPushSubscribed(false);
+      setPushStatus("Web Push is not supported in this browser.");
+      return;
+    }
+
+    try {
+      const payload = await apiJson<{
+        publicKey: string;
+        configured: boolean;
+        subscriptions: Array<{ endpoint: string }>;
+      }>("/api/notifications/subscribe");
+      setPushConfigured(payload.configured);
+      if (!payload.configured || !payload.publicKey) {
+        setPushSubscribed(false);
+        setPushStatus("Web Push needs VAPID keys before closed-app notifications can work.");
+        return;
+      }
+      const registration = await registerServiceWorker();
+      const browserSubscription = await registration?.pushManager.getSubscription();
+      const subscribed = Boolean(
+        browserSubscription &&
+          payload.subscriptions.some((subscription) => subscription.endpoint === browserSubscription.endpoint),
+      );
+      setPushSubscribed(subscribed);
+      setPushStatus(
+        subscribed
+          ? "This device is subscribed for Web Push."
+          : "This device is not subscribed for Web Push yet.",
+      );
+    } catch (error) {
+      setPushStatus(error instanceof Error ? error.message : "Could not check push status.");
+    }
+  }
+
+  async function subscribeToPushNotifications() {
+    setNotificationActionMessage("");
+    try {
+      if (!("Notification" in window)) throw new Error("This browser does not support notifications.");
+      if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
+        throw new Error("This browser does not support Web Push subscriptions.");
+      }
+      const permission = await requestNotificationPermission();
+      setNotificationPermissionState(permission);
+      if (permission !== "granted") throw new Error("Notification permission was not granted.");
+
+      const status = await apiJson<{ publicKey: string; configured: boolean }>("/api/notifications/subscribe");
+      if (!status.configured || !status.publicKey) {
+        throw new Error("Web Push is not configured. Add VAPID keys to the environment first.");
+      }
+
+      const registration = await registerServiceWorker();
+      if (!registration) throw new Error("Service worker registration failed.");
+      const existing = await registration.pushManager.getSubscription();
+      const subscription =
+        existing ??
+        (await registration.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: urlBase64ToUint8Array(status.publicKey),
+        }));
+
+      await apiJson("/api/notifications/subscribe", {
+        method: "POST",
+        body: JSON.stringify(subscription.toJSON()),
+      });
+      setPushSubscribed(true);
+      setPushConfigured(true);
+      setPushStatus("This device is subscribed for Web Push.");
+      setNotificationActionMessage("Notifications are enabled for this device.");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Could not enable notifications.";
+      setPushStatus(message);
+      setNotificationActionMessage(message);
+    }
+  }
+
+  async function unsubscribeFromPushNotifications() {
+    setNotificationActionMessage("");
+    try {
+      const registration = "serviceWorker" in navigator ? await navigator.serviceWorker.ready : null;
+      const subscription = await registration?.pushManager.getSubscription();
+      await apiJson("/api/notifications/unsubscribe", {
+        method: "DELETE",
+        body: JSON.stringify({ endpoint: subscription?.endpoint }),
+      });
+      await subscription?.unsubscribe();
+      setPushSubscribed(false);
+      setPushStatus("This device is unsubscribed from Web Push.");
+      setNotificationActionMessage("Notifications disabled for this device.");
+    } catch (error) {
+      setNotificationActionMessage(error instanceof Error ? error.message : "Could not disable notifications.");
+    }
+  }
+
+  async function sendTestNotification() {
+    setNotificationActionMessage("");
+    try {
+      if (!pushSubscribed) await subscribeToPushNotifications();
+      const payload = await apiJson<{ message: string; sent: number; skippedForQuietHours?: boolean }>(
+        "/api/notifications/test",
+        { method: "POST" },
+      );
+      setNotificationActionMessage(payload.message);
+      if (payload.sent > 0) await refreshPushStatus();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Could not send test notification.";
+      setNotificationActionMessage(message);
+      if ("Notification" in window && Notification.permission === "granted") {
+        const shown = await showArcgendaNotification(message, settings.notifications.vibration);
+        if (shown) setNotificationActionMessage(`${message} Foreground fallback was shown.`);
+      }
+    }
+  }
+
   useEffect(() => {
     const timer = window.setTimeout(() => void loadWorkspace(), 0);
     return () => window.clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session?.user.id]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => void refreshPushStatus(), 0);
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthed]);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -930,11 +1070,19 @@ export default function CalendarDashboard() {
         if (due <= now && !firedAlerts.current.has(item.id)) {
           if (isQuietTime(settings.notifications, now)) return;
           firedAlerts.current.add(item.id);
-          if ("Notification" in window && Notification.permission === "granted") {
+          if (
+            deviceNotificationsEnabled(settings.notifications) &&
+            "Notification" in window &&
+            Notification.permission === "granted"
+          ) {
             void showArcgendaNotification(item.title, settings.notifications.vibration);
             return;
           }
-          if ("Notification" in window && Notification.permission === "default") {
+          if (
+            deviceNotificationsEnabled(settings.notifications) &&
+            "Notification" in window &&
+            Notification.permission === "default"
+          ) {
             void requestNotificationPermission().then((permission) => {
               setNotificationPermissionState(permission);
               if (permission === "granted") {
@@ -1587,6 +1735,19 @@ export default function CalendarDashboard() {
     }
   }
 
+  async function leaveSharedCalendar(calendar: AppCalendar) {
+    const ownMember = calendar.members.find((member) => member.userId === session?.user.id);
+    if (!ownMember) return;
+    try {
+      if (!window.confirm(`Leave "${calendar.name}"? It will no longer count toward your free calendar limit.`)) return;
+      await apiJson(`/api/calendars/${calendar.id}/members/${ownMember.id}`, { method: "DELETE" });
+      await loadWorkspace();
+      setWorkspaceMessage("You left the shared calendar.");
+    } catch (error) {
+      setWorkspaceMessage(error instanceof Error ? error.message : "Could not leave shared calendar.");
+    }
+  }
+
   async function saveProfileSettings() {
     setSettingsMessage("");
     setSettingsError("");
@@ -1670,7 +1831,7 @@ export default function CalendarDashboard() {
       (key === "desktopNotifications" || key === "mobileNotifications") &&
       value === true
     ) {
-      void requestNotificationPermission().then(setNotificationPermissionState);
+      void subscribeToPushNotifications();
     }
     setSettings((current) => ({
       ...current,
@@ -1844,6 +2005,7 @@ export default function CalendarDashboard() {
                   onAskDeleteCalendar={setDeleteCalendarTarget}
                   onUpdateMember={updateCalendarMember}
                   onRemoveMember={removeCalendarMember}
+                  onLeaveCalendar={leaveSharedCalendar}
                   memberDraft={memberDraft}
                   setMemberDraft={setMemberDraft}
                   onAddMember={addCalendarMember}
@@ -1851,14 +2013,20 @@ export default function CalendarDashboard() {
                   setSettings={setSettings}
                   savedSettings={savedSettings}
                   notificationPermission={notificationPermission}
+                  pushStatus={pushStatus}
+                  pushConfigured={pushConfigured}
+                  pushSubscribed={pushSubscribed}
+                  notificationActionMessage={notificationActionMessage}
                   isMobileDevice={isMobileDevice}
                   canVibrate={canVibrate}
                   activeSection={activeSettingsSection}
                   onSectionChange={selectSettingsSection}
                   onNotificationChange={updateNotificationSetting}
                   onRequestNotifications={() =>
-                    void requestNotificationPermission().then(setNotificationPermissionState)
+                    void subscribeToPushNotifications()
                   }
+                  onUnsubscribeNotifications={() => void unsubscribeFromPushNotifications()}
+                  onTestNotification={() => void sendTestNotification()}
                   onAiChange={updateAiSetting}
                   onSaveSettings={saveProfileSettings}
                   onRevertSettings={revertUnsavedSettings}
@@ -1886,6 +2054,7 @@ export default function CalendarDashboard() {
               onAskDeleteCalendar={setDeleteCalendarTarget}
               onUpdateMember={updateCalendarMember}
               onRemoveMember={removeCalendarMember}
+              onLeaveCalendar={leaveSharedCalendar}
               memberDraft={memberDraft}
               setMemberDraft={setMemberDraft}
               onAddMember={addCalendarMember}
@@ -1893,14 +2062,20 @@ export default function CalendarDashboard() {
               setSettings={setSettings}
               savedSettings={savedSettings}
               notificationPermission={notificationPermission}
+              pushStatus={pushStatus}
+              pushConfigured={pushConfigured}
+              pushSubscribed={pushSubscribed}
+              notificationActionMessage={notificationActionMessage}
               isMobileDevice={isMobileDevice}
               canVibrate={canVibrate}
               activeSection={activeSettingsSection}
               onSectionChange={selectSettingsSection}
               onNotificationChange={updateNotificationSetting}
               onRequestNotifications={() =>
-                void requestNotificationPermission().then(setNotificationPermissionState)
+                void subscribeToPushNotifications()
               }
+              onUnsubscribeNotifications={() => void unsubscribeFromPushNotifications()}
+              onTestNotification={() => void sendTestNotification()}
               onAiChange={updateAiSetting}
               onSaveSettings={saveProfileSettings}
               onRevertSettings={revertUnsavedSettings}
@@ -1970,8 +2145,8 @@ export default function CalendarDashboard() {
       )}
       {deleteCalendarTarget && (
         <ConfirmModal
-          title={`Delete ${deleteCalendarTarget.name}?`}
-          body="Deleting a calendar will archive its events in the current backend flow. This cannot be undone from this screen."
+          title="Are you sure you want to delete this calendar?"
+          body={`"${deleteCalendarTarget.name}" will be deleted and its events will be archived in the current backend flow. This cannot be undone from this screen.`}
           confirmLabel="Delete calendar"
           danger
           onClose={() => setDeleteCalendarTarget(null)}
@@ -2836,6 +3011,7 @@ function SettingsTab({
   onAskDeleteCalendar,
   onUpdateMember,
   onRemoveMember,
+  onLeaveCalendar,
   memberDraft,
   setMemberDraft,
   onAddMember,
@@ -2843,12 +3019,18 @@ function SettingsTab({
   setSettings,
   savedSettings,
   notificationPermission,
+  pushStatus,
+  pushConfigured,
+  pushSubscribed,
+  notificationActionMessage,
   isMobileDevice,
   canVibrate,
   activeSection,
   onSectionChange,
   onNotificationChange,
   onRequestNotifications,
+  onUnsubscribeNotifications,
+  onTestNotification,
   onAiChange,
   onSaveSettings,
   onRevertSettings,
@@ -2867,6 +3049,7 @@ function SettingsTab({
   onAskDeleteCalendar: (calendar: AppCalendar) => void;
   onUpdateMember: (calendarId: string, memberId: string, role: "owner" | "editor" | "viewer") => void;
   onRemoveMember: (calendarId: string, memberId: string) => void;
+  onLeaveCalendar: (calendar: AppCalendar) => void;
   memberDraft: { calendarId: string; email: string; role: "editor" | "viewer" };
   setMemberDraft: (draft: { calendarId: string; email: string; role: "editor" | "viewer" }) => void;
   onAddMember: (event: FormEvent<HTMLFormElement>) => void;
@@ -2874,12 +3057,18 @@ function SettingsTab({
   setSettings: (settings: AppSettings) => void;
   savedSettings: AppSettings;
   notificationPermission: string;
+  pushStatus: string;
+  pushConfigured: boolean;
+  pushSubscribed: boolean;
+  notificationActionMessage: string;
   isMobileDevice: boolean;
   canVibrate: boolean;
   activeSection: SettingsSectionId;
   onSectionChange: (section: SettingsSectionId) => void;
   onNotificationChange: (key: keyof AppSettings["notifications"], value: boolean | string) => void;
   onRequestNotifications: () => void;
+  onUnsubscribeNotifications: () => void;
+  onTestNotification: () => void;
   onAiChange: (key: keyof AiSettings, value: boolean) => void;
   onSaveSettings: () => void;
   onRevertSettings: () => void;
@@ -3047,6 +3236,7 @@ function SettingsTab({
               displayName={settings.profile.calendarDisplayNames[calendar.id] ?? ""}
               onUpdateMember={onUpdateMember}
               onRemoveMember={onRemoveMember}
+              onLeaveCalendar={onLeaveCalendar}
               onChangeDisplayName={(value) =>
                 setSettings({
                   ...settings,
@@ -3118,18 +3308,49 @@ function SettingsTab({
           </p>
           <p className="mt-1 text-xs font-bold leading-5 text-[#8e8e93]">
             {notificationPermission === "granted"
-              ? "Arcgenda can show real reminders while the app is open. Background push still needs a push server before it can work when the app is fully closed."
+              ? pushStatus
               : isMobileDevice
-                ? "Tap Request permission. On iPhone, install Arcgenda to the Home Screen first if Safari does not show a prompt."
+                ? "Tap Enable notifications. On iPhone, Web Push requires the PWA to be installed to the Home Screen and notifications allowed."
                 : "Click Request permission. If no popup appears, use the lock icon in the address bar, open site settings, and allow notifications for Arcgenda."}
           </p>
-          <button
-            type="button"
-            onClick={onRequestNotifications}
-            className="mt-3 h-10 rounded-full bg-[#007aff] px-4 text-sm font-bold text-white"
-          >
-            Request permission
-          </button>
+          <p className="mt-2 text-xs font-bold leading-5 text-[#8e8e93]">
+            Closed-app reminders require Web Push plus a scheduler calling the due-reminders cron route. Foreground reminders still work while Arcgenda is open.
+          </p>
+          {!pushConfigured && (
+            <p className="mt-2 text-xs font-black text-[#ff9500]">
+              Add VAPID keys before production push delivery can work.
+            </p>
+          )}
+          {notificationActionMessage && (
+            <p className="mt-2 rounded-xl bg-white/70 px-3 py-2 text-xs font-bold text-[#636366]">
+              {notificationActionMessage}
+            </p>
+          )}
+          <div className="mt-3 grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              onClick={onRequestNotifications}
+              className="h-10 rounded-full bg-[#007aff] px-4 text-sm font-bold text-white"
+            >
+              {pushSubscribed ? "Refresh push" : "Enable push"}
+            </button>
+            <button
+              type="button"
+              onClick={onTestNotification}
+              className="h-10 rounded-full bg-white/75 px-4 text-sm font-bold text-[#007aff]"
+            >
+              Test notification
+            </button>
+          </div>
+          {pushSubscribed && (
+            <button
+              type="button"
+              onClick={onUnsubscribeNotifications}
+              className="mt-2 h-10 w-full rounded-full bg-[#ffe8e6] px-4 text-sm font-bold text-[#ff3b30]"
+            >
+              Disable on this device
+            </button>
+          )}
         </div>
         <div className="mt-3 grid gap-2">
           {notificationRows.map(([key, label]) => (
@@ -3233,18 +3454,6 @@ function SettingsTab({
       </SettingsCard>
 
       <SettingsCard
-        id="settings-account"
-        sectionId="account"
-        activeSection={activeSection}
-        onSectionChange={onSectionChange}
-        title="Account"
-        icon={<Shield size={18} />}
-      >
-        <PlaceholderRow title="Email managed by Supabase Auth" />
-        <PlaceholderRow title="Password reset flow coming soon" />
-      </SettingsCard>
-
-      <SettingsCard
         id="settings-danger"
         sectionId="danger"
         activeSection={activeSection}
@@ -3262,25 +3471,6 @@ function SettingsTab({
           Delete account
         </button>
       </SettingsCard>
-
-      <SettingsCard
-        id="settings-links"
-        sectionId="links"
-        activeSection={activeSection}
-        onSectionChange={onSectionChange}
-        title="App, feedback, and legal"
-        icon={<Sparkles size={18} />}
-      >
-        <div className="grid grid-cols-2 gap-2">
-          <SettingsLink href="/get-app" label="Get App" />
-          <SettingsLink href="/help" label="Help" />
-          <SettingsLink href="/contact" label="Contact" />
-          <SettingsLink href="/about" label="About" />
-          <SettingsLink href="/privacy" label="Privacy" />
-          <SettingsLink href="/terms" label="Terms" />
-          <SettingsLink href="/cookies" label="Cookies" />
-        </div>
-      </SettingsCard>
     </section>
   );
 }
@@ -3293,6 +3483,7 @@ function CalendarManagementRow({
   onChangeDisplayName,
   onUpdateMember,
   onRemoveMember,
+  onLeaveCalendar,
 }: {
   calendar: AppCalendar;
   onUpdate: (calendarId: string, updates: { name?: string; color?: string }) => void;
@@ -3301,6 +3492,7 @@ function CalendarManagementRow({
   onChangeDisplayName: (value: string) => void;
   onUpdateMember: (calendarId: string, memberId: string, role: "owner" | "editor" | "viewer") => void;
   onRemoveMember: (calendarId: string, memberId: string) => void;
+  onLeaveCalendar: (calendar: AppCalendar) => void;
 }) {
   const [name, setName] = useState(calendar.name);
   const [color, setColor] = useState(calendar.color);
@@ -3369,7 +3561,16 @@ function CalendarManagementRow({
         </div>
       ) : (
         <div className="mt-3 rounded-2xl bg-[#f2f2f7] px-3 py-2 text-xs font-bold text-[#8e8e93]">
-          You can view this shared calendar. Leaving shared calendars is prepared for a backend follow-up.
+          You can view this shared calendar.
+          {calendar.shared && (
+            <button
+              type="button"
+              onClick={() => onLeaveCalendar(calendar)}
+              className="mt-2 block h-9 rounded-full bg-white px-4 text-xs font-black text-[#ff3b30]"
+            >
+              Leave shared calendar
+            </button>
+          )}
         </div>
       )}
 
@@ -4129,17 +4330,6 @@ function PlanCard({ title, body }: { title: string; body: string }) {
       <p className="text-sm font-bold">{title}</p>
       <p className="mt-1 text-xs font-semibold text-[#7c7c8a]">{body}</p>
     </div>
-  );
-}
-
-function SettingsLink({ href, label }: { href: string; label: string }) {
-  return (
-    <Link
-      href={href}
-      className="rounded-2xl bg-white/80 px-3 py-2 text-center text-sm font-bold text-[#007aff] shadow-sm"
-    >
-      {label}
-    </Link>
   );
 }
 
