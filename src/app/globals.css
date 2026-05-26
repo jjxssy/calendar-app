@@ -6,11 +6,13 @@
   --surface: rgba(255, 255, 255, 0.72);
   --surface-strong: rgba(255, 255, 255, 0.88);
   --surface-muted: #f2f2f7;
+  --app-shell: rgba(255, 255, 255, 0.42);
   --muted: #636366;
   --muted-strong: #8e8e93;
   --border-soft: rgba(0, 0, 0, 0.08);
   --accent: #007aff;
   --danger: #ff3b30;
+  --shadow-soft: rgba(109, 93, 252, 0.15);
 }
 
 @theme inline {
@@ -114,11 +116,13 @@ html[data-theme="dark"] {
   --surface: rgba(38, 38, 46, 0.7);
   --surface-strong: rgba(48, 48, 58, 0.86);
   --surface-muted: rgba(32, 32, 40, 0.86);
+  --app-shell: rgba(28, 28, 36, 0.62);
   --muted: #cbcbd8;
   --muted-strong: #aaaabe;
   --border-soft: rgba(255, 255, 255, 0.13);
   --accent: #8ec5ff;
   --danger: #ff8a80;
+  --shadow-soft: rgba(0, 0, 0, 0.36);
 }
 
 html.dark body,
@@ -130,6 +134,13 @@ html[data-theme="dark"] body {
   color: #f7f7fb;
 }
 
+html.dark main,
+html.dark article,
+html.dark aside,
+html.dark form,
+html.dark dialog,
+html.dark .nav-circle,
+html.dark .event-card-shell,
 html[data-theme="dark"] main,
 html[data-theme="dark"] article,
 html[data-theme="dark"] aside,
@@ -140,6 +151,9 @@ html[data-theme="dark"] .event-card-shell {
   border-color: var(--border-soft);
 }
 
+html.dark article,
+html.dark aside,
+html.dark .nav-circle,
 html[data-theme="dark"] article,
 html[data-theme="dark"] aside,
 html[data-theme="dark"] .nav-circle {
@@ -147,6 +161,13 @@ html[data-theme="dark"] .nav-circle {
   backdrop-filter: blur(22px);
 }
 
+html.dark h1,
+html.dark h2,
+html.dark h3,
+html.dark h4,
+html.dark p,
+html.dark label,
+html.dark span,
 html[data-theme="dark"] h1,
 html[data-theme="dark"] h2,
 html[data-theme="dark"] h3,
@@ -157,11 +178,17 @@ html[data-theme="dark"] span {
   color: var(--foreground);
 }
 
+html.dark small,
+html.dark time,
 html[data-theme="dark"] small,
 html[data-theme="dark"] time {
   color: var(--muted);
 }
 
+html.dark input,
+html.dark textarea,
+html.dark select,
+html.dark .input-shell,
 html[data-theme="dark"] input,
 html[data-theme="dark"] textarea,
 html[data-theme="dark"] select,
@@ -171,13 +198,64 @@ html[data-theme="dark"] .input-shell {
   border: 1px solid var(--border-soft);
 }
 
+html.dark input::placeholder,
+html.dark textarea::placeholder,
 html[data-theme="dark"] input::placeholder,
 html[data-theme="dark"] textarea::placeholder {
   color: var(--muted-strong);
 }
 
+html.dark .event-card-shell,
 html[data-theme="dark"] .event-card-shell {
   background: linear-gradient(135deg, rgba(142, 197, 255, 0.18), rgba(244, 184, 255, 0.12)), var(--surface);
+}
+
+html.dark .arcgenda-app,
+html[data-theme="dark"] .arcgenda-app {
+  color: var(--foreground);
+}
+
+html.dark .arcgenda-app [class*="bg-white/"],
+html.dark .arcgenda-app [class~="bg-white"],
+html.dark .arcgenda-app [class*="bg-[#f2f2f7]"],
+html[data-theme="dark"] .arcgenda-app [class*="bg-white/"],
+html[data-theme="dark"] .arcgenda-app [class~="bg-white"],
+html[data-theme="dark"] .arcgenda-app [class*="bg-[#f2f2f7]"] {
+  background-color: var(--surface) !important;
+}
+
+html.dark .arcgenda-app [class*="border-white/"],
+html[data-theme="dark"] .arcgenda-app [class*="border-white/"] {
+  border-color: var(--border-soft) !important;
+}
+
+html.dark .arcgenda-app [class*="text-[#18181b]"],
+html.dark .arcgenda-app [class*="text-[#1d1d1f]"],
+html.dark .arcgenda-app [class*="text-[#27272a]"],
+html[data-theme="dark"] .arcgenda-app [class*="text-[#18181b]"],
+html[data-theme="dark"] .arcgenda-app [class*="text-[#1d1d1f]"],
+html[data-theme="dark"] .arcgenda-app [class*="text-[#27272a]"] {
+  color: var(--foreground) !important;
+}
+
+html.dark .arcgenda-app [class*="text-[#636366]"],
+html.dark .arcgenda-app [class*="text-[#7c7c8a]"],
+html.dark .arcgenda-app [class*="text-[#8e8e93]"],
+html.dark .arcgenda-app [class*="text-[#9b9baa]"],
+html[data-theme="dark"] .arcgenda-app [class*="text-[#636366]"],
+html[data-theme="dark"] .arcgenda-app [class*="text-[#7c7c8a]"],
+html[data-theme="dark"] .arcgenda-app [class*="text-[#8e8e93]"],
+html[data-theme="dark"] .arcgenda-app [class*="text-[#9b9baa]"] {
+  color: var(--muted) !important;
+}
+
+html.dark .arcgenda-app [class*="shadow-black/"],
+html.dark .arcgenda-app [class*="shadow-[#6d5dfc]"],
+html.dark .arcgenda-app [class*="shadow-[#8173ff]"],
+html[data-theme="dark"] .arcgenda-app [class*="shadow-black/"],
+html[data-theme="dark"] .arcgenda-app [class*="shadow-[#6d5dfc]"],
+html[data-theme="dark"] .arcgenda-app [class*="shadow-[#8173ff]"] {
+  --tw-shadow-color: var(--shadow-soft) !important;
 }
 
 .nav-circle {

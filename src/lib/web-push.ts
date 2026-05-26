@@ -8,6 +8,10 @@ export function getVapidPublicKey() {
   return process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY ?? process.env.VAPID_PUBLIC_KEY ?? "";
 }
 
+export function isWebPushConfigured() {
+  return Boolean(getVapidPublicKey() && process.env.VAPID_PRIVATE_KEY && process.env.VAPID_SUBJECT);
+}
+
 export function configureWebPush() {
   if (configured) return;
 
@@ -15,7 +19,7 @@ export function configureWebPush() {
   const privateKey = process.env.VAPID_PRIVATE_KEY;
   const subject = process.env.VAPID_SUBJECT;
 
-  if (!publicKey || !privateKey || !subject) {
+  if (!isWebPushConfigured() || !publicKey || !privateKey || !subject) {
     throw new Error("VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY, and VAPID_SUBJECT are required.");
   }
 

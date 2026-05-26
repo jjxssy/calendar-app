@@ -27,6 +27,9 @@ export async function POST(request: Request) {
 
     if (!title) throw new ApiError("title is required.");
     if (!remindAt) throw new ApiError("remindAt is required.");
+    if (remindAt.getTime() <= Date.now()) {
+      throw new ApiError("Reminder time must be in the future.");
+    }
     if (eventId) await ensureEvent(user.id, eventId);
     if (taskId) await ensureTask(user.id, taskId);
 

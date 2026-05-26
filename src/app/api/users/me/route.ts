@@ -1,10 +1,16 @@
 import { ApiError, fail, ok, readBody, requireUser, stringValue } from "@/lib/api-helpers";
 import { prisma } from "@/lib/prisma";
 
+function normalizeTheme(value: unknown) {
+  if (value === "light" || value === "dark" || value === "system") return value;
+  if (value === "white") return "light";
+  return "system";
+}
+
 export async function GET() {
   try {
     const user = await requireUser();
-    return ok({ user });
+    return ok({ user: { ...user, theme: normalizeTheme(user.theme) } });
   } catch (error) {
     return fail(error);
   }
@@ -13,7 +19,7 @@ export async function GET() {
 export async function POST() {
   try {
     const user = await requireUser();
-    return ok({ user });
+    return ok({ user: { ...user, theme: normalizeTheme(user.theme) } });
   } catch (error) {
     return fail(error);
   }
@@ -56,7 +62,7 @@ export async function PATCH(request: Request) {
       return savedUser;
     });
 
-    return ok({ user: updated });
+    return ok({ user: { ...updated, theme: normalizeTheme(updated.theme) } });
   } catch (error) {
     return fail(error);
   }

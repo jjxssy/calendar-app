@@ -171,6 +171,30 @@ Arcgenda Calendar includes:
 
 In local development, the service worker unregisters itself and clears caches to avoid stale Next.js chunks and hydration errors.
 
+## Closed-App Push Reminders
+
+Closed-app reminders require all of these pieces:
+
+- `VAPID_PUBLIC_KEY` and `NEXT_PUBLIC_VAPID_PUBLIC_KEY`
+- `VAPID_PRIVATE_KEY`
+- `VAPID_SUBJECT`
+- a saved browser push subscription from the notification settings screen
+- a scheduler calling `POST /api/cron/reminders/send-due`
+
+Generate VAPID keys with:
+
+```bash
+npx web-push generate-vapid-keys
+```
+
+For Vercel, `vercel.json` runs the cron route every minute. If `CRON_SECRET` is set, scheduled requests must include:
+
+```text
+Authorization: Bearer <CRON_SECRET>
+```
+
+The app will still run if VAPID or cron is missing, but notification settings will show that background reminder delivery is not fully configured.
+
 ## Useful Commands
 
 ```bash

@@ -35,6 +35,10 @@ export async function POST(request: Request) {
 
     if (!title) throw new ApiError("title is required.");
     if (eventId) await ensureEvent(user.id, eventId);
+    const dueDate = dateValue(body.dueDate, "dueDate");
+    if (dueDate && dueDate.getTime() <= Date.now()) {
+      throw new ApiError("Task reminder time must be in the future.");
+    }
 
     const task = await prisma.task.create({
       data: {
@@ -43,7 +47,7 @@ export async function POST(request: Request) {
         title,
         description: stringValue(body.description),
         completed: false,
-        dueDate: dateValue(body.dueDate, "dueDate"),
+        dueDate,
         priority: priorityValue(body.priority) ?? "normal",
       },
       include: { event: true, reminders: true },

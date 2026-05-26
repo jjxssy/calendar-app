@@ -1,7 +1,7 @@
 import { fail, ok } from "@/lib/api-helpers";
 import { isQuietTime, preferenceAllowsNotification, type NotificationKind } from "@/lib/notification-utils";
 import { prisma } from "@/lib/prisma";
-import { sendPushNotification } from "@/lib/web-push";
+import { isWebPushConfigured, sendPushNotification } from "@/lib/web-push";
 
 export const runtime = "nodejs";
 
@@ -61,17 +61,39 @@ export async function POST(request: Request) {
     if (!isAuthorized(request)) {
       return Response.json({ error: "Unauthorized cron request." }, { status: 401 });
     }
+    if (!isWebPushConfigured()) {
+      return ok({
+        sent: 0,
+        remindersChecked: 0,
+        skippedQuietHours: 0,
+        skippedDuplicates: 0,
+        note: "Closed-app push notifications are not configured yet. Add VAPID keys before enabling cron delivery.",
+      });
+    }
 
     const now = new Date();
+    const reminderGraceStart = addMinutes(now, -10);
+    const reminderGraceEnd = addMinutes(now, 0.5);
+    const taskGraceStart = addMinutes(now, -10);
+    const taskGraceEnd = addMinutes(now, 0.5);
     let sent = 0;
     let skippedQuietHours = 0;
     let skippedDuplicates = 0;
+
+    await prisma.reminder.updateMany({
+      where: {
+        completed: false,
+        notificationSentAt: null,
+        remindAt: { lt: reminderGraceStart },
+      },
+      data: { notificationSentAt: now },
+    });
 
     const reminders = await prisma.reminder.findMany({
       where: {
         completed: false,
         notificationSentAt: null,
-        remindAt: { lte: now },
+        remindAt: { gte: reminderGraceStart, lte: reminderGraceEnd },
         user: { pushSubscriptions: { some: { revokedAt: null } } },
       },
       take: 100,
@@ -169,7 +191,7 @@ export async function POST(request: Request) {
           where: {
             userId: preference.userId,
             completed: false,
-            dueDate: { lte: now },
+            dueDate: { gte: taskGraceStart, lte: taskGraceEnd },
           },
           take: 50,
           orderBy: { dueDate: "asc" },

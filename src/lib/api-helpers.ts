@@ -73,7 +73,6 @@ export async function requireUser() {
     where: { id: data.user.id },
     update: {
       email: data.user.email,
-      name: data.user.user_metadata?.name ?? data.user.user_metadata?.full_name ?? undefined,
     },
     create: {
       id: data.user.id,

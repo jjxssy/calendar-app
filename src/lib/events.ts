@@ -10,6 +10,7 @@ export type RescheduleReminder = {
   date: string;
   time: string;
   done: boolean;
+  notificationSentAt?: string | null;
 };
 
 export type CalendarEvent = {

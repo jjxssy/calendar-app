@@ -1,4 +1,5 @@
 import { ApiError, booleanValue, dateValue, ensureCategory, ensureWritableCalendar, fail, ok, readBody, requireUser, stringValue } from "@/lib/api-helpers";
+import { withEventActor, withEventActors } from "@/lib/event-response";
 import { prisma } from "@/lib/prisma";
 
 const priorities = ["low", "normal", "high", "urgent"] as const;
@@ -26,6 +27,7 @@ export async function GET(request: Request) {
     const url = new URL(request.url);
     const includeArchived = url.searchParams.get("includeArchived") === "true";
     const q = url.searchParams.get("q")?.trim();
+    const status = statusValue(url.searchParams.get("status") ?? undefined);
 
     const events = await prisma.event.findMany({
       where: {
@@ -47,19 +49,24 @@ export async function GET(request: Request) {
               : undefined,
           },
         ],
-        archivedAt: includeArchived ? undefined : null,
-        status: statusValue(url.searchParams.get("status") ?? undefined),
+        status: status ?? (includeArchived ? undefined : { not: "archived" }),
         categoryId: url.searchParams.get("categoryId") ?? undefined,
         startDate: {
           gte: dateValue(url.searchParams.get("from") ?? undefined, "from"),
           lte: dateValue(url.searchParams.get("to") ?? undefined, "to"),
         },
       },
-      include: { calendar: true, category: true, tasks: true, reminders: true, shares: true },
+      include: {
+        calendar: { include: { members: { include: { user: { select: { id: true, name: true, email: true } } } } } },
+        category: true,
+        tasks: true,
+        reminders: true,
+        shares: true,
+      },
       orderBy: [{ pinned: "desc" }, { startDate: "asc" }],
     });
 
-    return ok({ events });
+    return ok({ events: await withEventActors(events) });
   } catch (error) {
     return fail(error);
   }
@@ -72,11 +79,31 @@ export async function POST(request: Request) {
     const title = stringValue(body.title);
     const startDate = dateValue(body.startDate, "startDate");
     const categoryId = stringValue(body.categoryId);
-    const calendarId = stringValue(body.calendarId);
+    let calendarId = stringValue(body.calendarId);
 
     if (!title) throw new ApiError("title is required.");
     if (!startDate) throw new ApiError("startDate is required.");
     if (categoryId) await ensureCategory(user.id, categoryId);
+    if (!calendarId) {
+      const defaultCalendar = await prisma.calendar.findFirst({
+        where: {
+          OR: [
+            { ownerId: user.id },
+            {
+              members: {
+                some: {
+                  userId: user.id,
+                  status: "accepted",
+                  role: { in: ["owner", "editor"] },
+                },
+              },
+            },
+          ],
+        },
+        orderBy: { createdAt: "asc" },
+      });
+      calendarId = defaultCalendar?.id;
+    }
     if (calendarId) await ensureWritableCalendar(user.id, calendarId);
 
     const event = await prisma.$transaction(async (tx) => {
@@ -98,7 +125,13 @@ export async function POST(request: Request) {
           priority: priorityValue(body.priority) ?? "normal",
           pinned: booleanValue(body.pinned) ?? false,
         },
-        include: { calendar: true, category: true, tasks: true, reminders: true, shares: true },
+        include: {
+          calendar: { include: { members: { include: { user: { select: { id: true, name: true, email: true } } } } } },
+          category: true,
+          tasks: true,
+          reminders: true,
+          shares: true,
+        },
       });
 
       await tx.activityHistory.create({
@@ -114,7 +147,7 @@ export async function POST(request: Request) {
       return created;
     });
 
-    return ok({ event }, 201);
+    return ok({ event: await withEventActor(event) }, 201);
   } catch (error) {
     return fail(error);
   }

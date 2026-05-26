@@ -1,6 +1,6 @@
 import { fail, ok, readBody, requireUser, stringValue } from "@/lib/api-helpers";
 import { prisma } from "@/lib/prisma";
-import { getVapidPublicKey } from "@/lib/web-push";
+import { getVapidPublicKey, isWebPushConfigured } from "@/lib/web-push";
 
 function keyValue(keys: unknown, name: "p256dh" | "auth") {
   if (!keys || typeof keys !== "object") return undefined;
@@ -19,7 +19,8 @@ export async function GET() {
 
     return ok({
       publicKey: getVapidPublicKey(),
-      configured: Boolean(getVapidPublicKey() && process.env.VAPID_PRIVATE_KEY && process.env.VAPID_SUBJECT),
+      configured: isWebPushConfigured(),
+      cronConfigured: Boolean(process.env.CRON_SECRET || process.env.VERCEL),
       subscriptions,
     });
   } catch (error) {

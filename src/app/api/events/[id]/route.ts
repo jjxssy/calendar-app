@@ -1,4 +1,5 @@
 import { ApiError, booleanValue, dateValue, ensureCategory, ensureEditableEvent, ensureWritableCalendar, fail, ok, readBody, requireUser, stringValue } from "@/lib/api-helpers";
+import { withEventActor } from "@/lib/event-response";
 import { prisma } from "@/lib/prisma";
 
 const priorities = ["low", "normal", "high", "urgent"] as const;
@@ -51,7 +52,13 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
           pinned: booleanValue(body.pinned),
           status: statusValue(body.status),
         },
-        include: { calendar: true, category: true, tasks: true, reminders: true, shares: true },
+        include: {
+          calendar: { include: { members: { include: { user: { select: { id: true, name: true, email: true } } } } } },
+          category: true,
+          tasks: true,
+          reminders: true,
+          shares: true,
+        },
       });
       const moved = existing.calendarId !== updated.calendarId;
       if (moved) {
@@ -87,7 +94,7 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
       return updated;
     });
 
-    return ok({ event });
+    return ok({ event: await withEventActor(event) });
   } catch (error) {
     return fail(error);
   }

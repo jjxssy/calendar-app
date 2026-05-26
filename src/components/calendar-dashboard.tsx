@@ -123,6 +123,7 @@ type StandaloneTask = {
   reminderTime: string;
   eventId: string | null;
   eventTitle: string;
+  notificationSentAt?: string | null;
 };
 
 type TaskDraft = {
@@ -139,6 +140,8 @@ type TaskListItem = {
   eventId: string | null;
   eventTitle: string;
   eventStatus?: CalendarEvent["status"];
+  date: string;
+  time?: string;
 };
 
 type CalendarData = {
@@ -150,9 +153,19 @@ type CalendarData = {
   settings: AppSettings;
 };
 
+type NotificationCapabilities = {
+  supportsNotifications: boolean;
+  supportsServiceWorker: boolean;
+  supportsPush: boolean;
+  supportsVibration: boolean;
+  isIOS: boolean;
+  isPWAInstalled: boolean;
+};
+
 type DbMember = {
   id: string;
   email: string;
+  user?: { id: string; name?: string | null; email: string } | null;
   displayName?: string | null;
   role: "owner" | "editor" | "viewer";
   status: "pending" | "accepted";
@@ -192,6 +205,7 @@ type DbReminder = {
   title: string;
   remindAt: string;
   completed: boolean;
+  notificationSentAt?: string | null;
 };
 
 type DbEvent = {
@@ -200,6 +214,8 @@ type DbEvent = {
   categoryId?: string | null;
   createdById?: string | null;
   updatedById?: string | null;
+  createdBy?: { id: string; name?: string | null; email: string } | null;
+  updatedBy?: { id: string; name?: string | null; email: string } | null;
   title: string;
   description?: string | null;
   startDate: string;
@@ -247,6 +263,8 @@ const colorGrid = [
   "#1d1d1f",
 ];
 
+let serviceWorkerRegistrationPromise: Promise<ServiceWorkerRegistration | null> | null = null;
+
 function createId() {
   return globalThis.crypto?.randomUUID?.() ?? `id-${Date.now()}-${Math.random()}`;
 }
@@ -275,8 +293,11 @@ function urlBase64ToUint8Array(value: string) {
 
 async function registerServiceWorker() {
   if (!("serviceWorker" in navigator)) return null;
-  const registration = await navigator.serviceWorker.register("/sw.js");
-  return registration;
+  serviceWorkerRegistrationPromise ??= navigator.serviceWorker
+    .register("/sw.js")
+    .then(() => navigator.serviceWorker.ready)
+    .catch(() => null);
+  return serviceWorkerRegistrationPromise;
 }
 
 async function showArcgendaNotification(body: string, vibrate: boolean) {
@@ -302,16 +323,13 @@ async function showArcgendaNotification(body: string, vibrate: boolean) {
 
 function readCalendarData(session: AppSession | null, today: Date): CalendarData {
   const cachedTheme =
-    typeof window !== "undefined" &&
-    (["system", "light", "dark"] as const).includes(
-      localStorage.getItem("arcgenda-theme-hydration") as AppSettings["theme"],
-    )
-      ? (localStorage.getItem("arcgenda-theme-hydration") as AppSettings["theme"])
+    typeof window !== "undefined"
+      ? normalizeTheme(localStorage.getItem("arcgenda-theme-hydration"))
       : defaultSettings.theme;
   const fallback = {
     tags: Object.values(categoryStyles),
     calendars: [],
-    events: createInitialEvents(today),
+    events: session ? [] : createInitialEvents(today),
     standaloneTasks: [],
     eventReminders: [],
     settings: { ...defaultSettings, theme: cachedTheme },
@@ -323,6 +341,21 @@ function readCalendarData(session: AppSession | null, today: Date): CalendarData
   }
 
   return fallback;
+}
+
+function normalizeTheme(value: unknown): AppSettings["theme"] {
+  if (value === "light" || value === "dark" || value === "system") return value;
+  if (value === "white") return "light";
+  return "system";
+}
+
+function applyDocumentTheme(theme: AppSettings["theme"]) {
+  if (typeof window === "undefined") return;
+  const root = document.documentElement;
+  const systemDark = window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? false;
+  const dark = theme === "dark" || (theme === "system" && systemDark);
+  root.dataset.theme = theme;
+  root.classList.toggle("dark", dark);
 }
 
 async function apiJson<T>(url: string, init?: RequestInit) {
@@ -370,6 +403,18 @@ function mapCategory(category: DbCategory): CategoryStyle {
   };
 }
 
+function displayNameForUser(
+  user:
+    | { id?: string | null; name?: string | null; email?: string | null }
+    | null
+    | undefined,
+  calendar?: DbCalendar | null,
+) {
+  if (!user?.id) return "Unknown user";
+  const memberName = calendar?.members.find((member) => member.userId === user.id)?.displayName;
+  return memberName || user.name || user.email || "Unknown user";
+}
+
 function formatDuration(startDate: string, endDate?: string | null) {
   if (!endDate) return "30m";
   const minutes = Math.max(
@@ -388,6 +433,7 @@ function mapReminder(reminder: DbReminder): RescheduleReminder {
     date: toDateKey(date),
     time: currentTimeValue(date),
     done: reminder.completed,
+    notificationSentAt: reminder.notificationSentAt ?? null,
   };
 }
 
@@ -410,8 +456,8 @@ function mapEvent(event: DbEvent): CalendarEvent {
     status: event.status,
     cancellationReason: event.cancellationReason ?? undefined,
     cancelledAt: event.cancelledAt ?? undefined,
-    createdBy: event.createdById ?? undefined,
-    lastEditedBy: event.updatedById ?? undefined,
+    createdBy: displayNameForUser(event.createdBy, event.calendar),
+    lastEditedBy: displayNameForUser(event.updatedBy, event.calendar),
     sharedWith: event.shares?.map((share) => ({
       id: share.id,
       email: share.email,
@@ -429,7 +475,9 @@ function mapEvent(event: DbEvent): CalendarEvent {
 }
 
 function dateTimeFromDraft(date: string, time: string, allDay: boolean) {
-  return allDay ? `${date}T00:00:00` : `${date}T${time || "09:00"}:00`;
+  const [year, month, day] = date.split("-").map(Number);
+  const [hour = 9, minute = 0] = (allDay ? "00:00" : time || "09:00").split(":").map(Number);
+  return new Date(year, month - 1, day, hour, minute, 0).toISOString();
 }
 
 function minutesFromDuration(duration: string) {
@@ -442,6 +490,24 @@ function parseReminderMinutes(label: string) {
   if (label.includes("hour")) return 60;
   if (label.includes("day")) return 1440;
   return Number(label.match(/\d+/)?.[0] ?? 15);
+}
+
+function reminderDueAt(reminder: { date: string; time: string }) {
+  return new Date(`${reminder.date}T${reminder.time}`);
+}
+
+function isReminderDueNow(reminder: { date: string; time: string }, now = new Date()) {
+  const due = reminderDueAt(reminder).getTime();
+  const current = now.getTime();
+  return due >= current - 2 * 60 * 1000 && due <= current + 30 * 1000;
+}
+
+function isReminderTooOld(reminder: { date: string; time: string }, now = new Date()) {
+  return reminderDueAt(reminder).getTime() < now.getTime() - 5 * 60 * 1000;
+}
+
+function isFutureDateTime(date: string, time: string) {
+  return new Date(`${date}T${time}:00`).getTime() > Date.now();
 }
 
 function isQuietTime(settings: NotificationSettings, now = new Date()) {
@@ -468,9 +534,40 @@ function canVibrateDevice() {
   return typeof navigator !== "undefined" && "vibrate" in navigator;
 }
 
+function detectNotificationCapabilities(): NotificationCapabilities {
+  if (typeof window === "undefined" || typeof navigator === "undefined") {
+    return {
+      supportsNotifications: false,
+      supportsServiceWorker: false,
+      supportsPush: false,
+      supportsVibration: false,
+      isIOS: false,
+      isPWAInstalled: false,
+    };
+  }
+
+  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+  const standaloneNavigator = navigator as Navigator & { standalone?: boolean };
+  const isPWAInstalled =
+    window.matchMedia?.("(display-mode: standalone)").matches ||
+    standaloneNavigator.standalone === true;
+  const supportsNotifications = "Notification" in window;
+  const supportsServiceWorker = "serviceWorker" in navigator;
+  const supportsPush = supportsNotifications && supportsServiceWorker && "PushManager" in window;
+
+  return {
+    supportsNotifications,
+    supportsServiceWorker,
+    supportsPush,
+    supportsVibration: canVibrateDevice(),
+    isIOS,
+    isPWAInstalled,
+  };
+}
+
 function emptyDraft(date: Date, category: string): EventDraft {
   return {
-    calendarId: "personal",
+    calendarId: "",
     title: "",
     date: toDateKey(date),
     time: currentTimeValue(),
@@ -486,7 +583,7 @@ function emptyDraft(date: Date, category: string): EventDraft {
 
 function eventToDraft(event: CalendarEvent): EventDraft {
   return {
-    calendarId: event.calendarId ?? "personal",
+    calendarId: event.calendarId ?? "",
     title: event.title,
     date: event.date,
     time: event.allDay ? "09:00" : event.time,
@@ -519,6 +616,7 @@ export default function CalendarDashboard() {
   const router = useRouter();
   const today = useMemo(() => new Date(), []);
   const firedAlerts = useRef<Set<string>>(new Set());
+  const alertItemsRef = useRef<RescheduleReminder[]>([]);
   const sessionSnapshot = useSyncExternalStore(
     subscribeSessionStorage,
     readSessionSnapshot,
@@ -596,9 +694,19 @@ export default function CalendarDashboard() {
   const [pushStatus, setPushStatus] = useState("Checking push support...");
   const [pushSubscribed, setPushSubscribed] = useState(false);
   const [pushConfigured, setPushConfigured] = useState(false);
+  const [cronConfigured, setCronConfigured] = useState(false);
   const [notificationActionMessage, setNotificationActionMessage] = useState("");
   const [isMobileDevice, setIsMobileDevice] = useState(false);
   const [canVibrate, setCanVibrate] = useState(false);
+  const [notificationCapabilities, setNotificationCapabilities] =
+    useState<NotificationCapabilities>(() => ({
+      supportsNotifications: false,
+      supportsServiceWorker: false,
+      supportsPush: false,
+      supportsVibration: false,
+      isIOS: false,
+      isPWAInstalled: false,
+    }));
   const [deleteCalendarTarget, setDeleteCalendarTarget] = useState<AppCalendar | null>(null);
   const [deleteAccountOpen, setDeleteAccountOpen] = useState(false);
   const [deleteAccountText, setDeleteAccountText] = useState("");
@@ -613,6 +721,7 @@ export default function CalendarDashboard() {
     () => new Set(calendars.filter((calendar) => calendar.visible).map((calendar) => calendar.id)),
     [calendars],
   );
+  const hasVisibleCalendars = visibleCalendarIds.size > 0;
 
   const filteredEvents = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
@@ -621,7 +730,11 @@ export default function CalendarDashboard() {
         const tag = tagMap[event.category];
         const matchesCategory =
           activeCategory === "all" || event.category === activeCategory;
-        const matchesCalendar = visibleCalendarIds.has(event.calendarId ?? "personal");
+        const matchesCalendar =
+          !event.calendarId ||
+          !hasVisibleCalendars ||
+          visibleCalendarIds.has(event.calendarId) ||
+          !calendars.some((calendar) => calendar.id === event.calendarId);
         const matchesQuery =
           !normalizedQuery ||
           [event.title, event.location, event.notes, tag?.label]
@@ -632,13 +745,20 @@ export default function CalendarDashboard() {
         return matchesCalendar && matchesCategory && matchesQuery && event.status !== "archived";
       })
       .sort((a, b) => Number(b.pinned) - Number(a.pinned) || a.time.localeCompare(b.time));
-  }, [activeCategory, events, query, tagMap, visibleCalendarIds]);
+  }, [activeCategory, calendars, events, hasVisibleCalendars, query, tagMap, visibleCalendarIds]);
 
-  const selectedEvents = filteredEvents.filter((event) => event.date === selectedKey);
-  const selectedReminders = events
-    .flatMap((event) => event.rescheduleReminders)
-    .filter((reminder) => reminder.date === selectedKey && !reminder.done)
-    .sort((a, b) => a.time.localeCompare(b.time));
+  const selectedEvents = useMemo(
+    () => filteredEvents.filter((event) => event.date === selectedKey),
+    [filteredEvents, selectedKey],
+  );
+  const selectedReminders = useMemo(
+    () =>
+      events
+        .flatMap((event) => event.rescheduleReminders)
+        .filter((reminder) => reminder.date === selectedKey && !reminder.done)
+        .sort((a, b) => a.time.localeCompare(b.time)),
+    [events, selectedKey],
+  );
   const weekDays = getWeekDays(selectedDate);
   const taskItems = useMemo(
     (): TaskListItem[] => [
@@ -648,11 +768,21 @@ export default function CalendarDashboard() {
           eventId: event.id,
           eventTitle: event.title,
           eventStatus: event.status,
+          date: event.date,
+          time: event.time === "All day" ? undefined : event.time,
         })),
       ),
-      ...standaloneTasks,
+      ...standaloneTasks.map((task) => ({
+        ...task,
+        date: task.reminderDate,
+        time: task.reminderTime,
+      })),
     ],
     [events, standaloneTasks],
+  );
+  const selectedTaskItems = useMemo(
+    () => taskItems.filter((task) => task.date === selectedKey),
+    [selectedKey, taskItems],
   );
   const alertItems = useMemo(() => {
     const reminderMinutes = parseReminderMinutes(settings.notifications.defaultTiming);
@@ -671,6 +801,7 @@ export default function CalendarDashboard() {
               date: toDateKey(alertAt),
               time: currentTimeValue(alertAt),
               done: false,
+              notificationSentAt: null,
             };
           })
       : [];
@@ -687,6 +818,7 @@ export default function CalendarDashboard() {
             date: task.reminderDate,
             time: task.reminderTime,
             done: task.done,
+            notificationSentAt: task.notificationSentAt,
           }))
       : [];
     const dailyAgendaAlert = settings.notifications.dailyAgenda
@@ -698,6 +830,7 @@ export default function CalendarDashboard() {
             date: toDateKey(today),
             time: settings.notifications.quietEnd || "08:00",
             done: false,
+            notificationSentAt: null,
           },
         ]
       : [];
@@ -719,6 +852,10 @@ export default function CalendarDashboard() {
     [filteredEvents, stats],
   );
   const notificationPermission = notificationPermissionState;
+
+  useEffect(() => {
+    alertItemsRef.current = alertItems;
+  }, [alertItems]);
 
   function markBusy(action: string, busy: boolean) {
     setBusyActions((current) => {
@@ -799,7 +936,18 @@ export default function CalendarDashboard() {
         loadedCalendars = [payload.calendar];
       }
 
-      const mappedCalendars = loadedCalendars.map((calendar) => mapCalendar(calendar, session));
+      const eventCalendarIds = new Set(
+        eventPayload.events
+          .map((event) => event.calendarId)
+          .filter((calendarId): calendarId is string => Boolean(calendarId)),
+      );
+      let mappedCalendars = loadedCalendars.map((calendar) => {
+        const mapped = mapCalendar(calendar, session);
+        return eventCalendarIds.has(mapped.id) ? { ...mapped, visible: true } : mapped;
+      });
+      if (mappedCalendars.length > 0 && !mappedCalendars.some((calendar) => calendar.visible)) {
+        mappedCalendars = mappedCalendars.map((calendar) => ({ ...calendar, visible: true }));
+      }
       const calendarDisplayNames = Object.fromEntries(
         loadedCalendars
           .map((calendar) => {
@@ -808,10 +956,11 @@ export default function CalendarDashboard() {
           })
           .filter(([, value]) => value),
       ) as Record<string, string>;
+      const loadedTheme = normalizeTheme(userPayload.user.theme);
       const preferences = preferencePayload.preferences;
       const mappedSettings: AppSettings = {
         ...defaultSettings,
-        theme: userPayload.user.theme ?? "system",
+        theme: loadedTheme,
         profile: {
           accountName: userPayload.user.name ?? "",
           calendarDisplayNames,
@@ -844,6 +993,12 @@ export default function CalendarDashboard() {
       setCalendars(mappedCalendars);
       setTags(loadedCategories.map(mapCategory));
       setEvents(eventPayload.events.map(mapEvent));
+      if (
+        activeCategory !== "all" &&
+        !loadedCategories.some((category) => category.id === activeCategory)
+      ) {
+        setActiveCategory("all");
+      }
       setEventReminders(reminderPayload.reminders.filter((reminder) => !reminder.eventId).map(mapReminder));
       setStandaloneTasks(
         taskPayload.tasks
@@ -856,10 +1011,13 @@ export default function CalendarDashboard() {
             reminderTime: task.dueDate ? currentTimeValue(new Date(task.dueDate)) : currentTimeValue(),
             eventId: null,
             eventTitle: "Standalone task",
+            notificationSentAt: null,
           })),
       );
       setSavedSettings(mappedSettings);
       setSettings(mappedSettings);
+      localStorage.setItem("arcgenda-theme-hydration", loadedTheme);
+      applyDocumentTheme(loadedTheme);
       setMemberDraft((current) => ({
         ...current,
         calendarId: mappedCalendars[0]?.id ?? current.calendarId,
@@ -874,10 +1032,23 @@ export default function CalendarDashboard() {
 
   async function refreshPushStatus() {
     if (!isAuthed) return;
-    if (!("serviceWorker" in navigator) || !("PushManager" in window) || !("Notification" in window)) {
+    const capabilities = detectNotificationCapabilities();
+    setNotificationCapabilities(capabilities);
+    setIsMobileDevice(detectMobileDevice());
+    setCanVibrate(capabilities.supportsVibration);
+    setNotificationPermissionState(
+      capabilities.supportsNotifications ? Notification.permission : "unsupported",
+    );
+
+    if (!capabilities.supportsPush) {
       setPushConfigured(false);
       setPushSubscribed(false);
-      setPushStatus("Web Push is not supported in this browser.");
+      setCronConfigured(false);
+      setPushStatus(
+        capabilities.isIOS && !capabilities.isPWAInstalled
+          ? "Install Arcgenda to Home Screen to enable iPhone push notifications."
+          : "Web Push is not supported in this browser.",
+      );
       return;
     }
 
@@ -885,12 +1056,14 @@ export default function CalendarDashboard() {
       const payload = await apiJson<{
         publicKey: string;
         configured: boolean;
+        cronConfigured: boolean;
         subscriptions: Array<{ endpoint: string }>;
       }>("/api/notifications/subscribe");
       setPushConfigured(payload.configured);
+      setCronConfigured(payload.cronConfigured);
       if (!payload.configured || !payload.publicKey) {
         setPushSubscribed(false);
-        setPushStatus("Web Push needs VAPID keys before closed-app notifications can work.");
+        setPushStatus("Closed-app push notifications are not configured yet. Add VAPID keys.");
         return;
       }
       const registration = await registerServiceWorker();
@@ -902,7 +1075,9 @@ export default function CalendarDashboard() {
       setPushSubscribed(subscribed);
       setPushStatus(
         subscribed
-          ? "This device is subscribed for Web Push."
+          ? payload.cronConfigured
+            ? "This device is subscribed for Web Push."
+            : "This device is subscribed, but background reminder delivery is not fully configured yet."
           : "This device is not subscribed for Web Push yet.",
       );
     } catch (error) {
@@ -942,7 +1117,11 @@ export default function CalendarDashboard() {
       });
       setPushSubscribed(true);
       setPushConfigured(true);
-      setPushStatus("This device is subscribed for Web Push.");
+      setPushStatus(
+        cronConfigured
+          ? "This device is subscribed for Web Push."
+          : "This device is subscribed, but background reminder delivery is not fully configured yet.",
+      );
       setNotificationActionMessage("Notifications are enabled for this device.");
     } catch (error) {
       const message = error instanceof Error ? error.message : "Could not enable notifications.";
@@ -983,8 +1162,11 @@ export default function CalendarDashboard() {
       const message = error instanceof Error ? error.message : "Could not send test notification.";
       setNotificationActionMessage(message);
       if ("Notification" in window && Notification.permission === "granted") {
-        const shown = await showArcgendaNotification(message, settings.notifications.vibration);
-        if (shown) setNotificationActionMessage(`${message} Foreground fallback was shown.`);
+        new Notification("Arcgenda test notification", {
+          body: "This is only a foreground test notification.",
+          icon: "/icons/arcgenda-icon-192.png",
+        });
+        setNotificationActionMessage(`${message} Foreground test notification was shown.`);
       }
     }
   }
@@ -1002,12 +1184,8 @@ export default function CalendarDashboard() {
   }, [isAuthed]);
 
   useEffect(() => {
-    const root = document.documentElement;
     const applyTheme = () => {
-      const systemDark = window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? false;
-      const dark = settings.theme === "dark" || (settings.theme === "system" && systemDark);
-      root.dataset.theme = settings.theme;
-      root.classList.toggle("dark", dark);
+      applyDocumentTheme(settings.theme);
     };
     applyTheme();
     const media = window.matchMedia?.("(prefers-color-scheme: dark)");
@@ -1021,16 +1199,12 @@ export default function CalendarDashboard() {
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
-      const cachedTheme = localStorage.getItem("arcgenda-theme-hydration");
-      if (cachedTheme === "system" || cachedTheme === "light" || cachedTheme === "dark") {
-        setSettings((current) => ({ ...current, theme: cachedTheme }));
-        setSavedSettings((current) => ({ ...current, theme: cachedTheme }));
-      }
       setNotificationPermissionState(
         "Notification" in window ? Notification.permission : "unsupported",
       );
       setIsMobileDevice(detectMobileDevice());
       setCanVibrate(canVibrateDevice());
+      setNotificationCapabilities(detectNotificationCapabilities());
     }, 0);
     return () => window.clearTimeout(timer);
   }, []);
@@ -1065,35 +1239,67 @@ export default function CalendarDashboard() {
 
     const checkAlerts = () => {
       const now = new Date();
-      alertItems.forEach((item) => {
-        const due = new Date(`${item.date}T${item.time}`);
-        if (due <= now && !firedAlerts.current.has(item.id)) {
-          if (isQuietTime(settings.notifications, now)) return;
-          firedAlerts.current.add(item.id);
-          if (
-            deviceNotificationsEnabled(settings.notifications) &&
-            "Notification" in window &&
-            Notification.permission === "granted"
-          ) {
-            void showArcgendaNotification(item.title, settings.notifications.vibration);
-            return;
-          }
-          if (
-            deviceNotificationsEnabled(settings.notifications) &&
-            "Notification" in window &&
-            Notification.permission === "default"
-          ) {
-            void requestNotificationPermission().then((permission) => {
-              setNotificationPermissionState(permission);
-              if (permission === "granted") {
-                void showArcgendaNotification(item.title, settings.notifications.vibration);
-              } else {
-                window.alert(item.title);
-              }
+      alertItemsRef.current.forEach((item) => {
+        if (
+          firedAlerts.current.has(item.id) ||
+          item.done ||
+          item.notificationSentAt ||
+          (!isReminderDueNow(item, now) && !isReminderTooOld(item, now))
+        ) {
+          return;
+        }
+
+        firedAlerts.current.add(item.id);
+        if (isReminderTooOld(item, now) || isQuietTime(settings.notifications, now)) {
+          return;
+        }
+
+        if (
+          deviceNotificationsEnabled(settings.notifications) &&
+          "Notification" in window &&
+          Notification.permission === "granted"
+        ) {
+          void showArcgendaNotification(item.title, settings.notifications.vibration);
+          if (!item.id.startsWith("event-alert-") && !item.id.startsWith("task-alert-") && !item.id.startsWith("daily-agenda-")) {
+            void apiJson(`/api/reminders/${item.id}`, {
+              method: "PATCH",
+              body: JSON.stringify({ notificationSent: true }),
             });
-            return;
+            setEventReminders((current) =>
+              current.map((reminder) =>
+                reminder.id === item.id
+                  ? { ...reminder, notificationSentAt: new Date().toISOString() }
+                  : reminder,
+              ),
+            );
           }
-          window.alert(item.title);
+          return;
+        }
+
+        if (
+          deviceNotificationsEnabled(settings.notifications) &&
+          "Notification" in window &&
+          Notification.permission === "default"
+        ) {
+          void requestNotificationPermission().then((permission) => {
+            setNotificationPermissionState(permission);
+            if (permission === "granted") {
+              void showArcgendaNotification(item.title, settings.notifications.vibration);
+              if (!item.id.startsWith("event-alert-") && !item.id.startsWith("task-alert-") && !item.id.startsWith("daily-agenda-")) {
+                void apiJson(`/api/reminders/${item.id}`, {
+                  method: "PATCH",
+                  body: JSON.stringify({ notificationSent: true }),
+                });
+                setEventReminders((current) =>
+                  current.map((reminder) =>
+                    reminder.id === item.id
+                      ? { ...reminder, notificationSentAt: new Date().toISOString() }
+                      : reminder,
+                  ),
+                );
+              }
+            }
+          });
         }
       });
     };
@@ -1101,7 +1307,7 @@ export default function CalendarDashboard() {
     checkAlerts();
     const interval = window.setInterval(checkAlerts, 30000);
     return () => window.clearInterval(interval);
-  }, [alertItems, isAuthed, settings.notifications]);
+  }, [isAuthed, settings.notifications]);
 
   function tagFor(event: CalendarEvent) {
     return tagMap[event.category] ?? tags[0];
@@ -1133,7 +1339,7 @@ export default function CalendarDashboard() {
     setComposerKind("event");
     setDraft({
       ...emptyDraft(selectedDate, tags[0]?.id ?? "hobby"),
-      calendarId: calendars.find((calendar) => calendar.visible)?.id ?? "personal",
+      calendarId: calendars.find((calendar) => calendar.visible)?.id ?? calendars[0]?.id ?? "",
       time: currentTimeValue(now),
     });
     setEventReminderDraft({
@@ -1165,6 +1371,10 @@ export default function CalendarDashboard() {
     if (composerSubmitting) return;
     const title = taskDraft.title.trim();
     if (!title) return;
+    if (!isFutureDateTime(taskDraft.reminderDate, taskDraft.reminderTime)) {
+      setWorkspaceMessage("Choose a future reminder time for this task.");
+      return;
+    }
 
     setComposerSubmitting(true);
     try {
@@ -1190,8 +1400,22 @@ export default function CalendarDashboard() {
           },
           ...current,
         ]);
+      } else {
+        setEvents((current) =>
+          current.map((calendarEvent) =>
+            calendarEvent.id === createdTask.eventId
+              ? {
+                  ...calendarEvent,
+                  tasks: [
+                    ...calendarEvent.tasks,
+                    { id: createdTask.id, title: createdTask.title, done: createdTask.completed },
+                  ],
+                }
+              : calendarEvent,
+          ),
+        );
       }
-      void loadWorkspace();
+      setWorkspaceMessage("Task created.");
     } catch (error) {
       setWorkspaceMessage(error instanceof Error ? error.message : "Could not create task.");
       return;
@@ -1205,7 +1429,6 @@ export default function CalendarDashboard() {
       reminderTime: currentTimeValue(),
       eventId: "none",
     });
-    void requestNotificationPermission().then(setNotificationPermissionState);
     setComposerOpen(false);
     setActiveTab("tasks");
   }
@@ -1215,6 +1438,10 @@ export default function CalendarDashboard() {
     if (composerSubmitting) return;
     const title = draft.title.trim();
     if (!title) return;
+    if (eventReminderDraft.enabled && !isFutureDateTime(eventReminderDraft.date, eventReminderDraft.time)) {
+      setWorkspaceMessage("Choose a future reminder time for this event.");
+      return;
+    }
 
     const previous = events.find((item) => item.id === editingId);
     const nextCalendar = calendars.find((calendar) => calendar.id === draft.calendarId);
@@ -1232,7 +1459,7 @@ export default function CalendarDashboard() {
     const startDate = dateTimeFromDraft(draft.date, draft.time, draft.allDay);
     const endDate = new Date(new Date(startDate).getTime() + minutesFromDuration(draft.duration) * 60000).toISOString();
     const payload = {
-      calendarId: draft.calendarId,
+      calendarId: draft.calendarId || undefined,
       categoryId: draft.category,
       title,
       description: draft.notes.trim(),
@@ -1247,7 +1474,7 @@ export default function CalendarDashboard() {
     const previousEvents = events;
     const optimisticEvent: CalendarEvent = {
       id: optimisticId,
-      calendarId: draft.calendarId,
+      calendarId: draft.calendarId || undefined,
       title,
       date: draft.date,
       time: draft.allDay ? "All day" : draft.time,
@@ -1288,6 +1515,7 @@ export default function CalendarDashboard() {
             method: "POST",
             body: JSON.stringify(payload),
           });
+      const savedEvent = mapEvent(saved.event);
 
       await Promise.all(
         selectedTaskIds.map((taskId) =>
@@ -1307,9 +1535,23 @@ export default function CalendarDashboard() {
             remindAt: `${eventReminderDraft.date}T${eventReminderDraft.time}:00`,
           }),
         });
-        void requestNotificationPermission().then(setNotificationPermissionState);
       }
-      void loadWorkspace();
+      if (selectedTaskIds.length > 0 || eventReminderDraft.enabled) {
+        const refreshed = await apiJson<{ events: DbEvent[] }>("/api/events");
+        setEvents(refreshed.events.map(mapEvent));
+      } else {
+        setEvents((current) =>
+          editingId
+            ? current.map((item) => (item.id === editingId || item.id === optimisticId ? savedEvent : item))
+            : [savedEvent, ...current.filter((item) => item.id !== optimisticId && item.id !== savedEvent.id)],
+        );
+      }
+      if (selectedTaskIds.length > 0) {
+        setStandaloneTasks((current) => current.filter((task) => !selectedTaskIds.includes(task.id)));
+      }
+      setSelectedDate(fromDateKey(savedEvent.date));
+      setVisibleMonth(startOfMonth(fromDateKey(savedEvent.date)));
+      setWorkspaceMessage(editingId ? "Event saved." : "Event created.");
     } catch (error) {
       setEvents(previousEvents);
       setWorkspaceMessage(error instanceof Error ? error.message : "Could not save event.");
@@ -1327,7 +1569,7 @@ export default function CalendarDashboard() {
     markBusy(action, true);
     try {
       await apiJson(`/api/events/${id}`, { method: "DELETE" });
-      void loadWorkspace();
+      setWorkspaceMessage("Event archived.");
     } catch (error) {
       setEvents(previousEvents);
       setWorkspaceMessage(error instanceof Error ? error.message : "Could not archive event.");
@@ -1364,7 +1606,9 @@ export default function CalendarDashboard() {
         body: JSON.stringify({ cancellationReason }),
       });
       const cancelledEvent = mapEvent(payload.event);
-      void loadWorkspace();
+      setEvents((current) =>
+        current.map((event) => (event.id === cancelledEvent.id ? cancelledEvent : event)),
+      );
       setRescheduleTarget(cancelledEvent);
     } catch (error) {
       setEvents(previousEvents);
@@ -1388,11 +1632,15 @@ export default function CalendarDashboard() {
     );
     markBusy(action, true);
     try {
-      await apiJson(`/api/events/${id}`, {
+      const payload = await apiJson<{ event: DbEvent }>(`/api/events/${id}`, {
         method: "PATCH",
         body: JSON.stringify({ status: "scheduled" }),
       });
-      void loadWorkspace();
+      const restoredEvent = mapEvent(payload.event);
+      setEvents((current) =>
+        current.map((event) => (event.id === restoredEvent.id ? restoredEvent : event)),
+      );
+      setWorkspaceMessage("Event restored.");
     } catch (error) {
       setEvents(previousEvents);
       setWorkspaceMessage(error instanceof Error ? error.message : "Could not restore event.");
@@ -1403,6 +1651,10 @@ export default function CalendarDashboard() {
 
   async function createRescheduleReminder() {
     if (!rescheduleTarget) return;
+    if (!isFutureDateTime(rescheduleDraft.date, rescheduleDraft.time)) {
+      setWorkspaceMessage("Choose a future time for the reschedule reminder.");
+      return;
+    }
     const action = `reschedule:${rescheduleTarget.id}`;
     if (isBusy(action)) return;
     markBusy(action, true);
@@ -1424,7 +1676,8 @@ export default function CalendarDashboard() {
           dueDate: `${rescheduleDraft.date}T${rescheduleDraft.time}:00`,
         }),
       });
-      void loadWorkspace();
+      const refreshed = await apiJson<{ events: DbEvent[] }>("/api/events");
+      setEvents(refreshed.events.map(mapEvent));
       selectDate(fromDateKey(rescheduleDraft.date));
       setActiveTab("alerts");
       setRescheduleTarget(null);
@@ -1461,7 +1714,7 @@ export default function CalendarDashboard() {
         method: "PATCH",
         body: JSON.stringify({ completed: !task.done }),
       });
-      void loadWorkspace();
+      setWorkspaceMessage("Task updated.");
     } catch (error) {
       setEvents(previousEvents);
       setStandaloneTasks(previousTasks);
@@ -1489,11 +1742,23 @@ export default function CalendarDashboard() {
     setEventTaskDrafts((current) => ({ ...current, [eventId]: "" }));
     markBusy(action, true);
     try {
-      await apiJson("/api/tasks", {
+      const payload = await apiJson<{ task: DbTask }>("/api/tasks", {
         method: "POST",
         body: JSON.stringify({ eventId, title }),
       });
-      void loadWorkspace();
+      setEvents((current) =>
+        current.map((event) =>
+          event.id === eventId
+            ? {
+                ...event,
+                tasks: [
+                  ...event.tasks.filter((task) => task.id !== tempId),
+                  { id: payload.task.id, title: payload.task.title, done: payload.task.completed },
+                ],
+              }
+            : event,
+        ),
+      );
     } catch (error) {
       setEvents(previousEvents);
       setWorkspaceMessage(error instanceof Error ? error.message : "Could not create linked task.");
@@ -1523,7 +1788,7 @@ export default function CalendarDashboard() {
         method: "PATCH",
         body: JSON.stringify({ eventId }),
       });
-      void loadWorkspace();
+      setWorkspaceMessage("Task linked.");
     } catch (error) {
       setEvents(previousEvents);
       setStandaloneTasks(previousTasks);
@@ -1562,7 +1827,7 @@ export default function CalendarDashboard() {
     markBusy(action, true);
     try {
       await apiJson(`/api/tasks/${taskId}/unlink-event`, { method: "PATCH" });
-      void loadWorkspace();
+      setWorkspaceMessage("Task unlinked.");
     } catch (error) {
       setEvents(previousEvents);
       setStandaloneTasks(previousTasks);
@@ -1587,7 +1852,7 @@ export default function CalendarDashboard() {
     markBusy(action, true);
     try {
       await apiJson(`/api/tasks/${taskId}`, { method: "DELETE" });
-      void loadWorkspace();
+      setWorkspaceMessage("Task deleted.");
     } catch (error) {
       setEvents(previousEvents);
       setStandaloneTasks(previousTasks);
@@ -1606,12 +1871,13 @@ export default function CalendarDashboard() {
 
     markBusy(action, true);
     try {
-      await apiJson("/api/calendars", {
+      const payload = await apiJson<{ calendar: DbCalendar }>("/api/calendars", {
         method: "POST",
         body: JSON.stringify({ name, color: calendarDraft.color }),
       });
-      void loadWorkspace();
+      setCalendars((current) => [...current, mapCalendar(payload.calendar, session)]);
       setCalendarDraft({ name: "", color: "#007aff" });
+      setWorkspaceMessage("Calendar created.");
     } catch (error) {
       setWorkspaceMessage(error instanceof Error ? error.message : "Could not create calendar.");
     } finally {
@@ -1663,11 +1929,14 @@ export default function CalendarDashboard() {
     );
     markBusy(action, true);
     try {
-      await apiJson(`/api/calendars/${calendarId}`, {
+      const payload = await apiJson<{ calendar: DbCalendar }>(`/api/calendars/${calendarId}`, {
         method: "PATCH",
         body: JSON.stringify(updates),
       });
-      void loadWorkspace();
+      const updatedCalendar = mapCalendar(payload.calendar, session);
+      setCalendars((current) =>
+        current.map((calendar) => (calendar.id === calendarId ? updatedCalendar : calendar)),
+      );
       setWorkspaceMessage("Calendar saved.");
     } catch (error) {
       setCalendars(previousCalendars);
@@ -1694,7 +1963,6 @@ export default function CalendarDashboard() {
     markBusy(action, true);
     try {
       await apiJson(`/api/calendars/${target.id}`, { method: "DELETE" });
-      void loadWorkspace();
       setWorkspaceMessage("Calendar deleted. Its events were archived.");
     } catch (error) {
       setCalendars(previousCalendars);
@@ -1752,8 +2020,8 @@ export default function CalendarDashboard() {
     setSettingsMessage("");
     setSettingsError("");
     try {
-      await Promise.all([
-        apiJson("/api/users/me", {
+      const [profilePayload, notificationPayload] = await Promise.all([
+        apiJson<{ user: AppSession["user"] & { theme?: AppSettings["theme"] } }>("/api/users/me", {
           method: "PATCH",
           body: JSON.stringify({
             name: settings.profile.accountName,
@@ -1761,7 +2029,28 @@ export default function CalendarDashboard() {
             calendarDisplayNames: settings.profile.calendarDisplayNames,
           }),
         }),
-        apiJson("/api/settings/notifications", {
+        apiJson<{
+          preferences: {
+            eventReminders: boolean;
+            taskReminders: boolean;
+            dailyAgenda: boolean;
+            rescheduleReminders: boolean;
+            birthdayReminders: boolean;
+            desktopNotifications: boolean;
+            mobileNotifications: boolean;
+            quietHoursEnabled: boolean;
+            quietHoursStart: string;
+            quietHoursEnd: string;
+            soundEnabled: boolean;
+            vibrationEnabled: boolean;
+            defaultReminderMinutes: number;
+            aiEnabled: boolean;
+            aiScheduling: boolean;
+            aiInsights: boolean;
+            aiWeeklySummary: boolean;
+            privateMode: boolean;
+          };
+        }>("/api/settings/notifications", {
           method: "PATCH",
           body: JSON.stringify({
             eventReminders: settings.notifications.eventReminders,
@@ -1785,9 +2074,49 @@ export default function CalendarDashboard() {
           }),
         }),
       ]);
-      setSettingsMessage("Settings saved.");
-      setSavedSettings(settings);
-      await loadWorkspace();
+
+      const preferences = notificationPayload.preferences;
+      const savedTheme = normalizeTheme(profilePayload.user.theme);
+      const nextSettings: AppSettings = {
+        ...settings,
+        theme: savedTheme,
+        profile: {
+          ...settings.profile,
+          accountName: profilePayload.user.name ?? "",
+        },
+        notifications: {
+          eventReminders: preferences.eventReminders,
+          taskReminders: preferences.taskReminders,
+          dailyAgenda: preferences.dailyAgenda,
+          rescheduleReminders: preferences.rescheduleReminders,
+          birthdayReminders: preferences.birthdayReminders,
+          desktopNotifications: preferences.desktopNotifications,
+          mobileNotifications: preferences.mobileNotifications,
+          quietHours: preferences.quietHoursEnabled,
+          quietStart: preferences.quietHoursStart,
+          quietEnd: preferences.quietHoursEnd,
+          sound: preferences.soundEnabled,
+          vibration: preferences.vibrationEnabled,
+          defaultTiming:
+            preferences.defaultReminderMinutes === 0
+              ? "At time of event"
+              : `${preferences.defaultReminderMinutes} minutes before`,
+        },
+        ai: {
+          ...settings.ai,
+          enabled: preferences.aiEnabled,
+          scheduling: preferences.aiScheduling,
+          insights: preferences.aiInsights,
+          weeklySummary: preferences.aiWeeklySummary,
+          privateMode: preferences.privateMode,
+        },
+      };
+
+      setSettings(nextSettings);
+      setSavedSettings(nextSettings);
+      localStorage.setItem("arcgenda-theme-hydration", nextSettings.theme);
+      applyDocumentTheme(nextSettings.theme);
+      setSettingsMessage("Profile saved. Theme saved. Notifications saved. AI settings saved.");
     } catch (error) {
       setSettingsError(error instanceof Error ? error.message : "Could not save settings.");
     }
@@ -1882,15 +2211,15 @@ export default function CalendarDashboard() {
   }
 
   return (
-    <main className="h-dvh overflow-hidden bg-[#f6f4ff] text-[#18181b]">
+    <main className="arcgenda-app h-dvh overflow-hidden bg-[var(--background)] text-[var(--foreground)]">
       <div className="pointer-events-none fixed inset-0 overflow-hidden">
         <div className="absolute -left-24 top-[-80px] size-72 rounded-full bg-[#ff9bd2]/50 blur-3xl" />
         <div className="absolute right-[-90px] top-28 size-72 rounded-full bg-[#7dd3fc]/55 blur-3xl" />
         <div className="absolute bottom-[-120px] left-12 size-80 rounded-full bg-[#fef08a]/45 blur-3xl" />
       </div>
 
-      <div className="relative mx-auto grid h-dvh w-full max-w-md overflow-hidden bg-white/42 shadow-2xl shadow-[#6d5dfc]/15 backdrop-blur-3xl lg:max-w-7xl lg:grid-cols-[430px_1fr] lg:gap-6 lg:bg-transparent lg:p-6 lg:shadow-none">
-        <section className="flex h-dvh min-h-0 flex-col overflow-hidden bg-white/42 backdrop-blur-3xl lg:h-[calc(100dvh-48px)] lg:rounded-[36px] lg:border lg:border-white/55">
+      <div className="relative mx-auto grid h-dvh w-full max-w-md overflow-hidden bg-[var(--app-shell)] shadow-2xl shadow-[#6d5dfc]/15 backdrop-blur-3xl lg:max-w-7xl lg:grid-cols-[430px_1fr] lg:gap-6 lg:bg-transparent lg:p-6 lg:shadow-none">
+        <section className="flex h-dvh min-h-0 flex-col overflow-hidden bg-[var(--app-shell)] backdrop-blur-3xl lg:h-[calc(100dvh-48px)] lg:rounded-[36px] lg:border lg:border-[var(--border-soft)]">
           <Header
             today={today}
             activeTab={activeTab}
@@ -1980,7 +2309,8 @@ export default function CalendarDashboard() {
             )}
             {activeTab === "tasks" && (
               <TasksTab
-                tasks={taskItems}
+                tasks={selectedTaskItems}
+                selectedDate={selectedDate}
                 onToggle={toggleTask}
                 onDelete={deleteTask}
               />
@@ -2016,6 +2346,8 @@ export default function CalendarDashboard() {
                   pushStatus={pushStatus}
                   pushConfigured={pushConfigured}
                   pushSubscribed={pushSubscribed}
+                  cronConfigured={cronConfigured}
+                  notificationCapabilities={notificationCapabilities}
                   notificationActionMessage={notificationActionMessage}
                   isMobileDevice={isMobileDevice}
                   canVibrate={canVibrate}
@@ -2065,6 +2397,8 @@ export default function CalendarDashboard() {
               pushStatus={pushStatus}
               pushConfigured={pushConfigured}
               pushSubscribed={pushSubscribed}
+              cronConfigured={cronConfigured}
+              notificationCapabilities={notificationCapabilities}
               notificationActionMessage={notificationActionMessage}
               isMobileDevice={isMobileDevice}
               canVibrate={canVibrate}
@@ -2086,7 +2420,7 @@ export default function CalendarDashboard() {
               selectedDate={selectedDate}
               events={selectedEvents}
               reminders={selectedReminders}
-              tasks={taskItems}
+            tasks={taskItems}
               alerts={alertItems}
             />
           )}
@@ -2884,18 +3218,25 @@ function CalendarStrip({
 
 function TasksTab({
   tasks,
+  selectedDate,
   onToggle,
   onDelete,
 }: {
   tasks: TaskListItem[];
+  selectedDate: Date;
   onToggle: (taskId: string) => void;
   onDelete: (taskId: string) => void;
 }) {
+  const dayLabel = selectedDate.toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" });
+
   return (
     <section>
-      <SectionTitle eyebrow="Tasks" title="Checklist" count={tasks.length} />
+      <SectionTitle eyebrow="Tasks" title={`Checklist for ${dayLabel}`} count={tasks.length} />
       <div className="space-y-3">
-        {tasks.map((task) => (
+        {tasks.length === 0 ? (
+          <EmptyState title="No tasks for this day." body="Move the calendar to another date to view its tasks." />
+        ) : (
+          tasks.map((task) => (
           <article
             key={task.id}
             className="flex w-full items-center gap-3 rounded-[24px] border border-white/60 bg-white/70 p-4 text-left shadow-lg shadow-black/5 backdrop-blur-xl"
@@ -2921,7 +3262,8 @@ function TasksTab({
               <Trash2 size={15} />
             </IconButton>
           </article>
-        ))}
+          ))
+        )}
       </div>
     </section>
   );
@@ -3022,6 +3364,8 @@ function SettingsTab({
   pushStatus,
   pushConfigured,
   pushSubscribed,
+  cronConfigured,
+  notificationCapabilities,
   notificationActionMessage,
   isMobileDevice,
   canVibrate,
@@ -3060,6 +3404,8 @@ function SettingsTab({
   pushStatus: string;
   pushConfigured: boolean;
   pushSubscribed: boolean;
+  cronConfigured: boolean;
+  notificationCapabilities: NotificationCapabilities;
   notificationActionMessage: string;
   isMobileDevice: boolean;
   canVibrate: boolean;
@@ -3080,18 +3426,25 @@ function SettingsTab({
   );
   const memberInviteDisabled = !selectedCalendar || (!selectedCalendar.shared && sharedCalendarUsed);
   const sharedCalendars = calendars.filter((calendar) => calendar.shared);
-  const hasUnsavedSettings = JSON.stringify(settings) !== JSON.stringify(savedSettings);
+  const hasUnsavedSettings = useMemo(
+    () => JSON.stringify(settings) !== JSON.stringify(savedSettings),
+    [settings, savedSettings],
+  );
   const notificationRows = [
     ["eventReminders", "Event reminders"],
     ["taskReminders", "Task reminders"],
     ["dailyAgenda", "Daily agenda"],
     ["rescheduleReminders", "Reschedule reminders"],
     ["birthdayReminders", "Birthday reminders"],
-    ["desktopNotifications", "Desktop notifications"],
-    ...(isMobileDevice ? ([["mobileNotifications", "Mobile/PWA notifications"]] as const) : []),
+    ...(!isMobileDevice && notificationCapabilities.supportsNotifications
+      ? ([["desktopNotifications", "Desktop notifications"]] as const)
+      : []),
+    ...(isMobileDevice && notificationCapabilities.supportsPush
+      ? ([["mobileNotifications", "Mobile/PWA notifications"]] as const)
+      : []),
     ["quietHours", "Quiet hours"],
     ["sound", "Sound"],
-    ...(canVibrate ? ([["vibration", "Vibration"]] as const) : []),
+    ...(canVibrate && notificationCapabilities.supportsVibration ? ([["vibration", "Vibration"]] as const) : []),
   ] as const;
 
   return (
@@ -3307,18 +3660,31 @@ function SettingsTab({
             Permission on this {isMobileDevice ? "mobile/PWA device" : "desktop browser"}: {notificationPermission}
           </p>
           <p className="mt-1 text-xs font-bold leading-5 text-[#8e8e93]">
-            {notificationPermission === "granted"
-              ? pushStatus
-              : isMobileDevice
-                ? "Tap Enable notifications. On iPhone, Web Push requires the PWA to be installed to the Home Screen and notifications allowed."
-                : "Click Request permission. If no popup appears, use the lock icon in the address bar, open site settings, and allow notifications for Arcgenda."}
+            {!notificationCapabilities.supportsNotifications
+              ? "Notifications are not supported in this browser."
+              : !notificationCapabilities.supportsServiceWorker
+                ? "Service workers are not supported, so closed-app reminders cannot run here."
+                : !notificationCapabilities.supportsPush
+                  ? notificationCapabilities.isIOS && !notificationCapabilities.isPWAInstalled
+                    ? "Install Arcgenda to Home Screen to enable iPhone push notifications."
+                    : "Web Push is not supported in this browser."
+                  : notificationPermission === "granted"
+                    ? pushStatus
+                    : isMobileDevice
+                      ? "Tap Enable notifications. On iPhone, Web Push requires the PWA to be installed to the Home Screen and notifications allowed."
+                      : "Click Enable push. If no popup appears, use the lock icon in the address bar and allow notifications."}
           </p>
           <p className="mt-2 text-xs font-bold leading-5 text-[#8e8e93]">
-            Closed-app reminders require Web Push plus a scheduler calling the due-reminders cron route. Foreground reminders still work while Arcgenda is open.
+            Closed-app reminders require Web Push, VAPID keys, a saved device subscription, and a cron scheduler.
           </p>
           {!pushConfigured && (
             <p className="mt-2 text-xs font-black text-[#ff9500]">
-              Add VAPID keys before production push delivery can work.
+              Closed-app push notifications are not configured yet.
+            </p>
+          )}
+          {pushConfigured && !cronConfigured && (
+            <p className="mt-2 text-xs font-black text-[#ff9500]">
+              Background reminder delivery is not fully configured yet.
             </p>
           )}
           {notificationActionMessage && (
@@ -3331,6 +3697,7 @@ function SettingsTab({
               type="button"
               onClick={onRequestNotifications}
               className="h-10 rounded-full bg-[#007aff] px-4 text-sm font-bold text-white"
+              disabled={!notificationCapabilities.supportsPush}
             >
               {pushSubscribed ? "Refresh push" : "Enable push"}
             </button>
@@ -3338,6 +3705,7 @@ function SettingsTab({
               type="button"
               onClick={onTestNotification}
               className="h-10 rounded-full bg-white/75 px-4 text-sm font-bold text-[#007aff]"
+              disabled={!notificationCapabilities.supportsNotifications}
             >
               Test notification
             </button>
@@ -3774,10 +4142,11 @@ function EventComposer({
           </div>
           <FieldLabel label={editing ? "Move to calendar" : "Calendar"} helper="Choose the calendar space this event belongs to.">
             <select
-              value={draft.calendarId ?? "personal"}
+              value={draft.calendarId ?? ""}
               onChange={(event) => onChange({ ...draft, calendarId: event.target.value })}
               className="input-shell w-full capitalize"
             >
+              {writableCalendars.length === 0 && <option value="">No calendar</option>}
               {writableCalendars.map((calendar) => (
                 <option key={calendar.id} value={calendar.id}>
                   {calendar.name}{calendar.shared ? " (shared)" : ""}

@@ -1,11 +1,14 @@
 import { ApiError, fail, ok, requireUser } from "@/lib/api-helpers";
 import { isQuietTime, preferenceAllowsNotification } from "@/lib/notification-utils";
 import { prisma } from "@/lib/prisma";
-import { sendPushNotification } from "@/lib/web-push";
+import { isWebPushConfigured, sendPushNotification } from "@/lib/web-push";
 
 export async function POST() {
   try {
     const user = await requireUser();
+    if (!isWebPushConfigured()) {
+      throw new ApiError("Closed-app push notifications are not configured yet.", 400);
+    }
     const preference = await prisma.notificationPreference.upsert({
       where: { userId: user.id },
       update: {},

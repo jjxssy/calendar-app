@@ -61,7 +61,7 @@ export default function RootLayout({
         <script
           dangerouslySetInnerHTML={{
             __html:
-              "try{var t=localStorage.getItem('arcgenda-theme-hydration')||'system';var d=t==='dark'||(t==='system'&&window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches);document.documentElement.dataset.theme=t;document.documentElement.classList.toggle('dark',d)}catch(e){}",
+              "try{var t=localStorage.getItem('arcgenda-theme-hydration')||'system';if(t==='white')t='light';if(['system','light','dark'].indexOf(t)<0)t='system';var d=t==='dark'||(t==='system'&&window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches);document.documentElement.dataset.theme=t;document.documentElement.classList.toggle('dark',d)}catch(e){}",
           }}
         />
         {children}

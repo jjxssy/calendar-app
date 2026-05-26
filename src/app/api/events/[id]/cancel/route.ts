@@ -1,4 +1,5 @@
 import { ApiError, booleanValue, dateValue, ensureEditableEvent, fail, ok, readBody, requireUser, stringValue } from "@/lib/api-helpers";
+import { withEventActor } from "@/lib/event-response";
 import { prisma } from "@/lib/prisma";
 
 export async function PATCH(request: Request, context: { params: Promise<{ id: string }> }) {
@@ -24,7 +25,13 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
           cancelledAt: new Date(),
           updatedById: user.id,
         },
-        include: { calendar: true, category: true, tasks: true, reminders: true, shares: true },
+        include: {
+          calendar: { include: { members: { include: { user: { select: { id: true, name: true, email: true } } } } } },
+          category: true,
+          tasks: true,
+          reminders: true,
+          shares: true,
+        },
       });
 
       const title = `Reschedule: ${event.title}`;
@@ -64,7 +71,7 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
       return { event: cancelledEvent, task, reminder };
     });
 
-    return ok(result);
+    return ok({ ...result, event: await withEventActor(result.event) });
   } catch (error) {
     return fail(error);
   }
