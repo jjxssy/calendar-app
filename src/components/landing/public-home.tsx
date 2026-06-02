@@ -257,7 +257,7 @@ export function PublicHome() {
         <div className="absolute bottom-[-120px] left-12 size-80 rounded-full bg-[#fef08a]/40 blur-3xl" />
       </div>
 
-      <PublicNavbar />
+      <PublicNavbar activeHref="/" />
 
       <section className="relative mx-auto grid max-w-6xl gap-7 py-10 lg:grid-cols-[1.05fr_.95fr] lg:items-center lg:py-16">
         <div className="fade-in-up">

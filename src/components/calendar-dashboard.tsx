@@ -34,16 +34,8 @@ import {
   useMemo,
   useRef,
   useState,
-  useSyncExternalStore,
 } from "react";
-import {
-  AppSession,
-  clearSession,
-  legacySessionStorageKey,
-  readSession,
-  readSessionSnapshot,
-  sessionStorageKey,
-} from "@/lib/api";
+import { AppSession, clearSession, readSession, saveSession } from "@/lib/api";
 import { createClient } from "@/utils/supabase/client";
 import {
   CalendarView,
@@ -78,6 +70,9 @@ import { BrandMark } from "@/components/brand/brand-mark";
 
 type AppTab = "calendar" | "tasks" | "alerts" | "stats" | "settings";
 type ComposerKind = "event" | "task";
+type TaskView = "day" | "week" | "month";
+type ReminderPreset = "5m" | "10m" | "30m" | "1h" | "1d" | "custom";
+type CancelScope = "series-cancel" | "series-delete";
 type SettingsSectionId =
   | "profile"
   | "calendars"
@@ -105,6 +100,7 @@ type EventDraft = Pick<
 
 type ReminderDraft = {
   enabled: boolean;
+  preset: ReminderPreset;
   date: string;
   time: string;
 };
@@ -224,6 +220,7 @@ type DbEvent = {
   color?: string | null;
   location?: string | null;
   priority: "low" | "normal" | "high" | "urgent";
+  recurrence?: Recurrence | null;
   pinned: boolean;
   status: CalendarEvent["status"];
   cancellationReason?: string | null;
@@ -235,8 +232,38 @@ type DbEvent = {
   shares?: Array<{ id: string; email: string; role: "editor" | "viewer"; status: "pending" | "accepted" }>;
 };
 
+type DbNotificationPreferences = {
+  eventReminders: boolean;
+  taskReminders: boolean;
+  dailyAgenda: boolean;
+  rescheduleReminders: boolean;
+  birthdayReminders: boolean;
+  desktopNotifications: boolean;
+  mobileNotifications: boolean;
+  quietHoursEnabled: boolean;
+  quietHoursStart: string;
+  quietHoursEnd: string;
+  soundEnabled: boolean;
+  vibrationEnabled: boolean;
+  defaultReminderMinutes: number;
+  aiEnabled: boolean;
+  aiScheduling: boolean;
+  aiInsights: boolean;
+  aiWeeklySummary: boolean;
+  privateMode: boolean;
+};
+
 const viewOptions: CalendarView[] = ["month", "week", "day"];
+const taskViewOptions: TaskView[] = ["day", "week", "month"];
 const recurrences: Recurrence[] = ["none", "daily", "weekly", "monthly", "yearly"];
+const reminderPresets: Array<{ value: ReminderPreset; label: string; minutes?: number }> = [
+  { value: "5m", label: "5 min before", minutes: 5 },
+  { value: "10m", label: "10 min before", minutes: 10 },
+  { value: "30m", label: "30 min before", minutes: 30 },
+  { value: "1h", label: "1 hour before", minutes: 60 },
+  { value: "1d", label: "1 day before", minutes: 1440 },
+  { value: "custom", label: "Custom" },
+];
 const timelineSlots = ["08:00", "09:00", "10:00", "11:00", "12:00", "13:00", "14:00", "15:00", "16:00", "17:00", "18:00"];
 const settingsNavigation: Array<{ id: SettingsSectionId; label: string }> = [
   { id: "profile", label: "Profile" },
@@ -321,24 +348,15 @@ async function showArcgendaNotification(body: string, vibrate: boolean) {
   return true;
 }
 
-function readCalendarData(session: AppSession | null, today: Date): CalendarData {
-  const cachedTheme =
-    typeof window !== "undefined"
-      ? normalizeTheme(localStorage.getItem("arcgenda-theme-hydration"))
-      : defaultSettings.theme;
+function readCalendarData(today: Date): CalendarData {
   const fallback = {
     tags: Object.values(categoryStyles),
     calendars: [],
-    events: session ? [] : createInitialEvents(today),
+    events: createInitialEvents(today),
     standaloneTasks: [],
     eventReminders: [],
-    settings: { ...defaultSettings, theme: cachedTheme },
+    settings: { ...defaultSettings },
   };
-
-  if (session && typeof window !== "undefined") {
-    localStorage.removeItem(sessionStorageKey(session));
-    localStorage.removeItem(legacySessionStorageKey(session));
-  }
 
   return fallback;
 }
@@ -359,10 +377,16 @@ function applyDocumentTheme(theme: AppSettings["theme"]) {
 }
 
 async function apiJson<T>(url: string, init?: RequestInit) {
+  const token =
+    typeof window === "undefined"
+      ? undefined
+      : (await createClient().auth.getSession()).data.session?.access_token ??
+        readSession()?.accessToken;
   const response = await fetch(url, {
     ...init,
     headers: {
       "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...init?.headers,
     },
   });
@@ -448,7 +472,7 @@ function mapEvent(event: DbEvent): CalendarEvent {
     duration: formatDuration(event.startDate, event.endDate),
     category: event.categoryId ?? event.category?.id ?? "uncategorized",
     priority: event.priority === "urgent" ? "high" : event.priority,
-    recurrence: "none",
+    recurrence: event.recurrence ?? "none",
     location: event.location ?? "No location",
     notes: event.description ?? "",
     allDay: event.allDay,
@@ -474,10 +498,87 @@ function mapEvent(event: DbEvent): CalendarEvent {
   };
 }
 
+function mapStandaloneTask(task: DbTask, today: Date): StandaloneTask {
+  return {
+    id: task.id,
+    title: task.title,
+    done: task.completed,
+    reminderDate: task.dueDate ? toDateKey(new Date(task.dueDate)) : toDateKey(today),
+    reminderTime: task.dueDate ? currentTimeValue(new Date(task.dueDate)) : currentTimeValue(),
+    eventId: null,
+    eventTitle: "Standalone task",
+    notificationSentAt: null,
+  };
+}
+
+function mapPreferencesToSettings(
+  preferences: DbNotificationPreferences,
+  baseSettings: AppSettings,
+  profile: AppSettings["profile"],
+  theme: AppSettings["theme"],
+): AppSettings {
+  return {
+    ...baseSettings,
+    theme,
+    profile,
+    notifications: {
+      eventReminders: preferences.eventReminders,
+      taskReminders: preferences.taskReminders,
+      dailyAgenda: preferences.dailyAgenda,
+      rescheduleReminders: preferences.rescheduleReminders,
+      birthdayReminders: preferences.birthdayReminders,
+      desktopNotifications: preferences.desktopNotifications,
+      mobileNotifications: preferences.mobileNotifications,
+      quietHours: preferences.quietHoursEnabled,
+      quietStart: preferences.quietHoursStart,
+      quietEnd: preferences.quietHoursEnd,
+      sound: preferences.soundEnabled,
+      vibration: preferences.vibrationEnabled,
+      defaultTiming:
+        preferences.defaultReminderMinutes === 0
+          ? "At time of event"
+          : `${preferences.defaultReminderMinutes} minutes before`,
+    },
+    ai: {
+      ...baseSettings.ai,
+      enabled: preferences.aiEnabled,
+      scheduling: preferences.aiScheduling,
+      insights: preferences.aiInsights,
+      weeklySummary: preferences.aiWeeklySummary,
+      privateMode: preferences.privateMode,
+    },
+  };
+}
+
 function dateTimeFromDraft(date: string, time: string, allDay: boolean) {
   const [year, month, day] = date.split("-").map(Number);
   const [hour = 9, minute = 0] = (allDay ? "00:00" : time || "09:00").split(":").map(Number);
   return new Date(year, month - 1, day, hour, minute, 0).toISOString();
+}
+
+function reminderDateTimeFromPreset(startDate: string, preset: ReminderPreset) {
+  const presetConfig = reminderPresets.find((item) => item.value === preset);
+  const reminderDate = new Date(startDate);
+  reminderDate.setMinutes(reminderDate.getMinutes() - (presetConfig?.minutes ?? 10));
+  return {
+    date: toDateKey(reminderDate),
+    time: currentTimeValue(reminderDate),
+  };
+}
+
+function resolveReminderDateTime(
+  draft: ReminderDraft,
+  startDate: string,
+  recurrence: Recurrence,
+) {
+  if (!draft.enabled) return null;
+  if (draft.preset === "custom") {
+    if (recurrence !== "none") {
+      throw new Error("Custom reminders are only available for one-time events.");
+    }
+    return { date: draft.date, time: draft.time };
+  }
+  return reminderDateTimeFromPreset(startDate, draft.preset);
 }
 
 function minutesFromDuration(duration: string) {
@@ -607,30 +708,21 @@ function hourFromTime(time: string) {
   return Number.isFinite(hour) ? hour : 8;
 }
 
-function subscribeSessionStorage(onStoreChange: () => void) {
-  window.addEventListener("storage", onStoreChange);
-  return () => window.removeEventListener("storage", onStoreChange);
-}
-
 export default function CalendarDashboard() {
   const router = useRouter();
   const today = useMemo(() => new Date(), []);
   const firedAlerts = useRef<Set<string>>(new Set());
   const alertItemsRef = useRef<RescheduleReminder[]>([]);
-  const sessionSnapshot = useSyncExternalStore(
-    subscribeSessionStorage,
-    readSessionSnapshot,
-    () => "__server__",
-  );
-  const session = useMemo(
-    () => (sessionSnapshot && sessionSnapshot !== "__server__" ? readSession() : null),
-    [sessionSnapshot],
-  );
+  const workspaceMutationVersion = useRef(0);
+  const workspaceLoadVersion = useRef(0);
+  const [session, setSession] = useState<AppSession | null>(() => readSession());
+  const [settingsLoaded, setSettingsLoaded] = useState(false);
   const isAuthed = Boolean(session);
-  const initialData = useMemo(() => readCalendarData(session, today), [session, today]);
+  const initialData = useMemo(() => readCalendarData(today), [today]);
   const [visibleMonth, setVisibleMonth] = useState(startOfMonth(today));
   const [selectedDate, setSelectedDate] = useState(today);
   const [view, setView] = useState<CalendarView>("month");
+  const [taskView, setTaskView] = useState<TaskView>("day");
   const [activeTab, setActiveTab] = useState<AppTab>("calendar");
   const [activeSettingsSection, setActiveSettingsSection] =
     useState<SettingsSectionId>("profile");
@@ -652,6 +744,7 @@ export default function CalendarDashboard() {
   const [draft, setDraft] = useState<EventDraft>(() => emptyDraft(today, "hobby"));
   const [eventReminderDraft, setEventReminderDraft] = useState<ReminderDraft>({
     enabled: false,
+    preset: "10m",
     date: toDateKey(today),
     time: currentTimeValue(today),
   });
@@ -679,6 +772,7 @@ export default function CalendarDashboard() {
   });
   const [cancelTarget, setCancelTarget] = useState<CalendarEvent | null>(null);
   const [cancellationReason, setCancellationReason] = useState("");
+  const [cancelScope, setCancelScope] = useState<CancelScope>("series-cancel");
   const [rescheduleTarget, setRescheduleTarget] = useState<CalendarEvent | null>(null);
   const [rescheduleDraft, setRescheduleDraft] = useState({
     date: toDateKey(addDays(today, 1)),
@@ -759,7 +853,7 @@ export default function CalendarDashboard() {
         .sort((a, b) => a.time.localeCompare(b.time)),
     [events, selectedKey],
   );
-  const weekDays = getWeekDays(selectedDate);
+  const weekDays = useMemo(() => getWeekDays(selectedDate), [selectedDate]);
   const taskItems = useMemo(
     (): TaskListItem[] => [
       ...events.flatMap((event) =>
@@ -784,6 +878,38 @@ export default function CalendarDashboard() {
     () => taskItems.filter((task) => task.date === selectedKey),
     [selectedKey, taskItems],
   );
+  const taskViewKeys = useMemo(() => {
+    if (taskView === "day") return new Set([selectedKey]);
+    if (taskView === "week") return new Set(weekDays.map((day) => toDateKey(day)));
+    return new Set(
+      monthDays
+        .filter((day) => day.currentMonth)
+        .map((day) => day.key),
+    );
+  }, [monthDays, selectedKey, taskView, weekDays]);
+  const visibleTaskItems = useMemo(
+    () => taskItems.filter((task) => taskViewKeys.has(task.date)),
+    [taskItems, taskViewKeys],
+  );
+  const taskViewTitle = useMemo(() => {
+    if (taskView === "day") {
+      return selectedDate.toLocaleDateString("en-US", {
+        weekday: "long",
+        month: "short",
+        day: "numeric",
+      });
+    }
+    if (taskView === "week") {
+      return `${weekDays[0].toLocaleDateString("en-US", {
+        month: "short",
+        day: "numeric",
+      })} - ${weekDays[6].toLocaleDateString("en-US", {
+        month: "short",
+        day: "numeric",
+      })}`;
+    }
+    return formatMonthYear(visibleMonth);
+  }, [selectedDate, taskView, visibleMonth, weekDays]);
   const alertItems = useMemo(() => {
     const reminderMinutes = parseReminderMinutes(settings.notifications.defaultTiming);
     const eventAlerts = settings.notifications.eventReminders
@@ -839,6 +965,10 @@ export default function CalendarDashboard() {
       `${a.date} ${a.time}`.localeCompare(`${b.date} ${b.time}`),
     );
   }, [eventReminders, events, selectedEvents.length, settings.notifications, standaloneTasks, today]);
+  const selectedAlertItems = useMemo(
+    () => alertItems.filter((alert) => alert.date === selectedKey),
+    [alertItems, selectedKey],
+  );
   const unboundUndoneTasks = useMemo(
     () => standaloneTasks.filter((task) => !task.done && !task.eventId),
     [standaloneTasks],
@@ -873,9 +1003,35 @@ export default function CalendarDashboard() {
     return busyActions.has(action);
   }
 
-  async function loadWorkspace() {
-    if (!session) return;
-    setWorkspaceLoading(true);
+  function markWorkspaceMutation() {
+    workspaceMutationVersion.current += 1;
+  }
+
+  function logDiagnostic(label: string, eventCount = events.length, theme = settings.theme) {
+    console.log(`[Arcgenda diagnostics] ${label}`, {
+      userId: session?.user.id ?? readSession()?.user.id ?? null,
+      eventCount,
+      workspaceMutationVersion: workspaceMutationVersion.current,
+      workspaceLoadVersion: workspaceLoadVersion.current,
+      theme,
+    });
+  }
+
+  async function loadWorkspace(options: { message?: string; showLoading?: boolean } = {}) {
+    logDiagnostic("loadWorkspace() call");
+    const storedSession = readSession();
+    const sessionUserId = storedSession?.user.id;
+    if (!sessionUserId) {
+      setSession(storedSession);
+      setSettingsLoaded(false);
+      setWorkspaceMessage("Sign in again to load your workspace.");
+      return;
+    }
+
+    const loadVersionAtStart = ++workspaceLoadVersion.current;
+    const mutationVersionAtStart = workspaceMutationVersion.current;
+    const showLoading = options.showLoading ?? true;
+    if (showLoading) setWorkspaceLoading(true);
     setWorkspaceMessage("");
     try {
       const [userPayload, calendarPayload, categoryPayload, eventPayload, taskPayload, reminderPayload, preferencePayload] =
@@ -886,29 +1042,12 @@ export default function CalendarDashboard() {
           apiJson<{ events: DbEvent[] }>("/api/events"),
           apiJson<{ tasks: DbTask[] }>("/api/tasks"),
           apiJson<{ reminders: DbReminder[] }>("/api/reminders"),
-          apiJson<{
-            preferences: {
-              eventReminders: boolean;
-              taskReminders: boolean;
-              dailyAgenda: boolean;
-              rescheduleReminders: boolean;
-              birthdayReminders: boolean;
-              desktopNotifications: boolean;
-              mobileNotifications: boolean;
-              quietHoursEnabled: boolean;
-              quietHoursStart: string;
-              quietHoursEnd: string;
-              soundEnabled: boolean;
-              vibrationEnabled: boolean;
-              defaultReminderMinutes: number;
-              aiEnabled: boolean;
-              aiScheduling: boolean;
-              aiInsights: boolean;
-              aiWeeklySummary: boolean;
-              privateMode: boolean;
-            };
-          }>("/api/settings/notifications"),
+          apiJson<{ preferences: DbNotificationPreferences }>("/api/settings/notifications"),
         ]);
+      const accessToken =
+        (await createClient().auth.getSession()).data.session?.access_token ??
+        readSession()?.accessToken;
+      const nextSession = { accessToken, user: userPayload.user };
 
       let loadedCategories = categoryPayload.categories;
       if (loadedCategories.length === 0) {
@@ -942,7 +1081,7 @@ export default function CalendarDashboard() {
           .filter((calendarId): calendarId is string => Boolean(calendarId)),
       );
       let mappedCalendars = loadedCalendars.map((calendar) => {
-        const mapped = mapCalendar(calendar, session);
+        const mapped = mapCalendar(calendar, nextSession);
         return eventCalendarIds.has(mapped.id) ? { ...mapped, visible: true } : mapped;
       });
       if (mappedCalendars.length > 0 && !mappedCalendars.some((calendar) => calendar.visible)) {
@@ -951,83 +1090,141 @@ export default function CalendarDashboard() {
       const calendarDisplayNames = Object.fromEntries(
         loadedCalendars
           .map((calendar) => {
-            const ownMember = calendar.members.find((member) => member.userId === session.user.id);
+            const ownMember = calendar.members.find((member) => member.userId === nextSession.user.id);
             return [calendar.id, ownMember?.displayName ?? ""];
           })
           .filter(([, value]) => value),
       ) as Record<string, string>;
       const loadedTheme = normalizeTheme(userPayload.user.theme);
       const preferences = preferencePayload.preferences;
-      const mappedSettings: AppSettings = {
-        ...defaultSettings,
-        theme: loadedTheme,
-        profile: {
+      const mappedSettings = mapPreferencesToSettings(
+        preferences,
+        defaultSettings,
+        {
           accountName: userPayload.user.name ?? "",
           calendarDisplayNames,
         },
-        notifications: {
-          eventReminders: preferences.eventReminders,
-          taskReminders: preferences.taskReminders,
-          dailyAgenda: preferences.dailyAgenda,
-          rescheduleReminders: preferences.rescheduleReminders,
-          birthdayReminders: preferences.birthdayReminders,
-          desktopNotifications: preferences.desktopNotifications,
-          mobileNotifications: preferences.mobileNotifications,
-          quietHours: preferences.quietHoursEnabled,
-          quietStart: preferences.quietHoursStart,
-          quietEnd: preferences.quietHoursEnd,
-          sound: preferences.soundEnabled,
-          vibration: preferences.vibrationEnabled,
-          defaultTiming: `${preferences.defaultReminderMinutes} minutes before`,
-        },
-        ai: {
-          enabled: preferences.aiEnabled,
-          scheduling: preferences.aiScheduling,
-          insights: preferences.aiInsights,
-          reschedule: false,
-          weeklySummary: preferences.aiWeeklySummary,
-          privateMode: preferences.privateMode,
-        },
-      };
+        loadedTheme,
+      );
 
+      if (
+        loadVersionAtStart !== workspaceLoadVersion.current ||
+        mutationVersionAtStart !== workspaceMutationVersion.current
+      ) {
+        return;
+      }
+
+      saveSession(nextSession);
+      setSession(nextSession);
       setCalendars(mappedCalendars);
       setTags(loadedCategories.map(mapCategory));
+      console.log("[Arcgenda diagnostics] before setEvents(loadWorkspace)", {
+        previousEventCount: events.length,
+        nextEventCount: eventPayload.events.length,
+        userId: nextSession.user.id ?? session?.user.id ?? null,
+        workspaceMutationVersion: workspaceMutationVersion.current,
+        workspaceLoadVersion: workspaceLoadVersion.current,
+        theme: settings.theme,
+      });
       setEvents(eventPayload.events.map(mapEvent));
-      if (
-        activeCategory !== "all" &&
-        !loadedCategories.some((category) => category.id === activeCategory)
-      ) {
-        setActiveCategory("all");
-      }
+      console.log("[Arcgenda diagnostics] after setEvents(loadWorkspace)", {
+        previousEventCount: events.length,
+        nextEventCount: eventPayload.events.length,
+        userId: nextSession.user.id ?? session?.user.id ?? null,
+        workspaceMutationVersion: workspaceMutationVersion.current,
+        workspaceLoadVersion: workspaceLoadVersion.current,
+        theme: settings.theme,
+      });
+      setActiveCategory("all");
       setEventReminders(reminderPayload.reminders.filter((reminder) => !reminder.eventId).map(mapReminder));
       setStandaloneTasks(
         taskPayload.tasks
           .filter((task) => !task.eventId)
-          .map((task) => ({
-            id: task.id,
-            title: task.title,
-            done: task.completed,
-            reminderDate: task.dueDate ? toDateKey(new Date(task.dueDate)) : toDateKey(today),
-            reminderTime: task.dueDate ? currentTimeValue(new Date(task.dueDate)) : currentTimeValue(),
-            eventId: null,
-            eventTitle: "Standalone task",
-            notificationSentAt: null,
-          })),
+          .map((task) => mapStandaloneTask(task, today)),
       );
       setSavedSettings(mappedSettings);
+      console.log("[Arcgenda diagnostics] before setSettings(loadWorkspace)", {
+        userId: nextSession.user.id ?? session?.user.id ?? null,
+        eventCount: eventPayload.events.length,
+        workspaceMutationVersion: workspaceMutationVersion.current,
+        workspaceLoadVersion: workspaceLoadVersion.current,
+        previousTheme: settings.theme,
+        nextTheme: mappedSettings.theme,
+      });
       setSettings(mappedSettings);
-      localStorage.setItem("arcgenda-theme-hydration", loadedTheme);
+      console.log("[Arcgenda diagnostics] after setSettings(loadWorkspace)", {
+        userId: nextSession.user.id ?? session?.user.id ?? null,
+        eventCount: eventPayload.events.length,
+        workspaceMutationVersion: workspaceMutationVersion.current,
+        workspaceLoadVersion: workspaceLoadVersion.current,
+        previousTheme: settings.theme,
+        nextTheme: mappedSettings.theme,
+      });
+      setSettingsLoaded(true);
       applyDocumentTheme(loadedTheme);
       setMemberDraft((current) => ({
         ...current,
         calendarId: mappedCalendars[0]?.id ?? current.calendarId,
       }));
-      setWorkspaceMessage("Workspace loaded from your account.");
+      setWorkspaceMessage(options.message ?? "Workspace loaded from your account.");
     } catch (error) {
+      if (
+        loadVersionAtStart !== workspaceLoadVersion.current ||
+        mutationVersionAtStart !== workspaceMutationVersion.current
+      ) {
+        return;
+      }
+      clearSession();
+      setSession(null);
+      setSettingsLoaded(false);
       setWorkspaceMessage(error instanceof Error ? error.message : "Could not load workspace.");
     } finally {
-      setWorkspaceLoading(false);
+      if (showLoading) setWorkspaceLoading(false);
     }
+  }
+
+  async function refreshSchedule(message?: string) {
+    logDiagnostic("refreshSchedule() call");
+    if (!session) return;
+    const loadVersionAtStart = workspaceLoadVersion.current;
+    const mutationVersionAtStart = workspaceMutationVersion.current;
+    const [eventPayload, taskPayload, reminderPayload] = await Promise.all([
+      apiJson<{ events: DbEvent[] }>("/api/events"),
+      apiJson<{ tasks: DbTask[] }>("/api/tasks"),
+      apiJson<{ reminders: DbReminder[] }>("/api/reminders"),
+    ]);
+
+    if (
+      loadVersionAtStart !== workspaceLoadVersion.current ||
+      mutationVersionAtStart !== workspaceMutationVersion.current
+    ) {
+      return;
+    }
+
+    console.log("[Arcgenda diagnostics] before setEvents(refreshSchedule)", {
+      previousEventCount: events.length,
+      nextEventCount: eventPayload.events.length,
+      userId: session.user.id ?? null,
+      workspaceMutationVersion: workspaceMutationVersion.current,
+      workspaceLoadVersion: workspaceLoadVersion.current,
+      theme: settings.theme,
+    });
+    setEvents(eventPayload.events.map(mapEvent));
+    console.log("[Arcgenda diagnostics] after setEvents(refreshSchedule)", {
+      previousEventCount: events.length,
+      nextEventCount: eventPayload.events.length,
+      userId: session.user.id ?? null,
+      workspaceMutationVersion: workspaceMutationVersion.current,
+      workspaceLoadVersion: workspaceLoadVersion.current,
+      theme: settings.theme,
+    });
+    setStandaloneTasks(
+      taskPayload.tasks
+        .filter((task) => !task.eventId)
+        .map((task) => mapStandaloneTask(task, today)),
+    );
+    setEventReminders(reminderPayload.reminders.filter((reminder) => !reminder.eventId).map(mapReminder));
+    if (message) setWorkspaceMessage(message);
   }
 
   async function refreshPushStatus() {
@@ -1175,7 +1372,7 @@ export default function CalendarDashboard() {
     const timer = window.setTimeout(() => void loadWorkspace(), 0);
     return () => window.clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [session?.user.id]);
+  }, []);
 
   useEffect(() => {
     const timer = window.setTimeout(() => void refreshPushStatus(), 0);
@@ -1185,17 +1382,14 @@ export default function CalendarDashboard() {
 
   useEffect(() => {
     const applyTheme = () => {
+      if (!settingsLoaded) return;
       applyDocumentTheme(settings.theme);
     };
     applyTheme();
     const media = window.matchMedia?.("(prefers-color-scheme: dark)");
     media?.addEventListener("change", applyTheme);
     return () => media?.removeEventListener("change", applyTheme);
-  }, [settings.theme]);
-
-  useEffect(() => {
-    localStorage.setItem("arcgenda-theme-hydration", savedSettings.theme);
-  }, [savedSettings.theme]);
+  }, [settings.theme, settingsLoaded]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -1344,6 +1538,7 @@ export default function CalendarDashboard() {
     });
     setEventReminderDraft({
       enabled: false,
+      preset: "10m",
       date: toDateKey(selectedDate),
       time: currentTimeValue(now),
     });
@@ -1355,6 +1550,13 @@ export default function CalendarDashboard() {
       eventId: "none",
     });
     setComposerOpen(true);
+  }
+
+  function openNewItem() {
+    openNewEvent();
+    if (activeTab === "tasks") {
+      setComposerKind("task");
+    }
   }
 
   function openEditEvent(event: CalendarEvent) {
@@ -1377,8 +1579,9 @@ export default function CalendarDashboard() {
     }
 
     setComposerSubmitting(true);
+    markWorkspaceMutation();
     try {
-      const payload = await apiJson<{ task: DbTask }>("/api/tasks", {
+      await apiJson<{ task: DbTask }>("/api/tasks", {
         method: "POST",
         body: JSON.stringify({
           title,
@@ -1386,36 +1589,7 @@ export default function CalendarDashboard() {
           dueDate: `${taskDraft.reminderDate}T${taskDraft.reminderTime}:00`,
         }),
       });
-      const createdTask = payload.task;
-      if (!createdTask.eventId) {
-        setStandaloneTasks((current) => [
-          {
-            id: createdTask.id,
-            title: createdTask.title,
-            done: createdTask.completed,
-            reminderDate: createdTask.dueDate ? toDateKey(new Date(createdTask.dueDate)) : taskDraft.reminderDate,
-            reminderTime: createdTask.dueDate ? currentTimeValue(new Date(createdTask.dueDate)) : taskDraft.reminderTime,
-            eventId: null,
-            eventTitle: "Standalone task",
-          },
-          ...current,
-        ]);
-      } else {
-        setEvents((current) =>
-          current.map((calendarEvent) =>
-            calendarEvent.id === createdTask.eventId
-              ? {
-                  ...calendarEvent,
-                  tasks: [
-                    ...calendarEvent.tasks,
-                    { id: createdTask.id, title: createdTask.title, done: createdTask.completed },
-                  ],
-                }
-              : calendarEvent,
-          ),
-        );
-      }
-      setWorkspaceMessage("Task created.");
+      await refreshSchedule("Task created.");
     } catch (error) {
       setWorkspaceMessage(error instanceof Error ? error.message : "Could not create task.");
       return;
@@ -1435,13 +1609,10 @@ export default function CalendarDashboard() {
 
   async function saveEvent(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    logDiagnostic("saveEvent() call");
     if (composerSubmitting) return;
     const title = draft.title.trim();
     if (!title) return;
-    if (eventReminderDraft.enabled && !isFutureDateTime(eventReminderDraft.date, eventReminderDraft.time)) {
-      setWorkspaceMessage("Choose a future reminder time for this event.");
-      return;
-    }
 
     const previous = events.find((item) => item.id === editingId);
     const nextCalendar = calendars.find((calendar) => calendar.id === draft.calendarId);
@@ -1457,6 +1628,17 @@ export default function CalendarDashboard() {
     }
 
     const startDate = dateTimeFromDraft(draft.date, draft.time, draft.allDay);
+    let reminderDateTime: { date: string; time: string } | null = null;
+    try {
+      reminderDateTime = resolveReminderDateTime(eventReminderDraft, startDate, draft.recurrence);
+    } catch (error) {
+      setWorkspaceMessage(error instanceof Error ? error.message : "Choose a valid reminder.");
+      return;
+    }
+    if (reminderDateTime && !isFutureDateTime(reminderDateTime.date, reminderDateTime.time)) {
+      setWorkspaceMessage("Choose a future reminder time for this event.");
+      return;
+    }
     const endDate = new Date(new Date(startDate).getTime() + minutesFromDuration(draft.duration) * 60000).toISOString();
     const payload = {
       calendarId: draft.calendarId || undefined,
@@ -1468,6 +1650,7 @@ export default function CalendarDashboard() {
       allDay: draft.allDay,
       location: draft.location.trim() || "No location",
       priority: previous?.priority ?? "normal",
+      recurrence: draft.recurrence,
       pinned: draft.pinned,
     };
     const optimisticId = editingId ?? `temp-${createId()}`;
@@ -1494,10 +1677,43 @@ export default function CalendarDashboard() {
     };
 
     setComposerSubmitting(true);
+    markWorkspaceMutation();
     if (editingId) {
+      console.log("[Arcgenda diagnostics] before setEvents(saveEvent optimistic edit)", {
+        previousEventCount: events.length,
+        nextEventCount: events.length,
+        userId: session?.user.id ?? readSession()?.user.id ?? null,
+        workspaceMutationVersion: workspaceMutationVersion.current,
+        workspaceLoadVersion: workspaceLoadVersion.current,
+        theme: settings.theme,
+      });
       setEvents((current) => current.map((item) => (item.id === editingId ? optimisticEvent : item)));
+      console.log("[Arcgenda diagnostics] after setEvents(saveEvent optimistic edit)", {
+        previousEventCount: events.length,
+        nextEventCount: events.length,
+        userId: session?.user.id ?? readSession()?.user.id ?? null,
+        workspaceMutationVersion: workspaceMutationVersion.current,
+        workspaceLoadVersion: workspaceLoadVersion.current,
+        theme: settings.theme,
+      });
     } else {
+      console.log("[Arcgenda diagnostics] before setEvents(saveEvent optimistic create)", {
+        previousEventCount: events.length,
+        nextEventCount: events.length + 1,
+        userId: session?.user.id ?? readSession()?.user.id ?? null,
+        workspaceMutationVersion: workspaceMutationVersion.current,
+        workspaceLoadVersion: workspaceLoadVersion.current,
+        theme: settings.theme,
+      });
       setEvents((current) => [optimisticEvent, ...current]);
+      console.log("[Arcgenda diagnostics] after setEvents(saveEvent optimistic create)", {
+        previousEventCount: events.length,
+        nextEventCount: events.length + 1,
+        userId: session?.user.id ?? readSession()?.user.id ?? null,
+        workspaceMutationVersion: workspaceMutationVersion.current,
+        workspaceLoadVersion: workspaceLoadVersion.current,
+        theme: settings.theme,
+      });
     }
     setSelectedDate(fromDateKey(draft.date));
     setVisibleMonth(startOfMonth(fromDateKey(draft.date)));
@@ -1516,6 +1732,9 @@ export default function CalendarDashboard() {
             body: JSON.stringify(payload),
           });
       const savedEvent = mapEvent(saved.event);
+      if (activeCategory !== "all" && activeCategory !== savedEvent.category) {
+        setActiveCategory("all");
+      }
 
       await Promise.all(
         selectedTaskIds.map((taskId) =>
@@ -1526,34 +1745,58 @@ export default function CalendarDashboard() {
         ),
       );
 
-      if (eventReminderDraft.enabled) {
+      if (reminderDateTime) {
         await apiJson("/api/reminders", {
           method: "POST",
           body: JSON.stringify({
             eventId: saved.event.id,
             title: `Event reminder: ${title}`,
-            remindAt: `${eventReminderDraft.date}T${eventReminderDraft.time}:00`,
+            remindAt: `${reminderDateTime.date}T${reminderDateTime.time}:00`,
           }),
         });
       }
-      if (selectedTaskIds.length > 0 || eventReminderDraft.enabled) {
-        const refreshed = await apiJson<{ events: DbEvent[] }>("/api/events");
-        setEvents(refreshed.events.map(mapEvent));
-      } else {
-        setEvents((current) =>
-          editingId
-            ? current.map((item) => (item.id === editingId || item.id === optimisticId ? savedEvent : item))
-            : [savedEvent, ...current.filter((item) => item.id !== optimisticId && item.id !== savedEvent.id)],
-        );
-      }
-      if (selectedTaskIds.length > 0) {
-        setStandaloneTasks((current) => current.filter((task) => !selectedTaskIds.includes(task.id)));
-      }
+      console.log("[Arcgenda diagnostics] before setEvents(saveEvent saved)", {
+        previousEventCount: events.length,
+        nextEventCount: editingId ? events.length : events.filter((item) => item.id !== optimisticId && item.id !== savedEvent.id).length + 1,
+        userId: session?.user.id ?? readSession()?.user.id ?? null,
+        workspaceMutationVersion: workspaceMutationVersion.current,
+        workspaceLoadVersion: workspaceLoadVersion.current,
+        theme: settings.theme,
+      });
+      setEvents((current) =>
+        editingId
+          ? current.map((item) => (item.id === editingId || item.id === optimisticId ? savedEvent : item))
+          : [savedEvent, ...current.filter((item) => item.id !== optimisticId && item.id !== savedEvent.id)],
+      );
+      console.log("[Arcgenda diagnostics] after setEvents(saveEvent saved)", {
+        previousEventCount: events.length,
+        nextEventCount: editingId ? events.length : events.filter((item) => item.id !== optimisticId && item.id !== savedEvent.id).length + 1,
+        userId: session?.user.id ?? readSession()?.user.id ?? null,
+        workspaceMutationVersion: workspaceMutationVersion.current,
+        workspaceLoadVersion: workspaceLoadVersion.current,
+        theme: settings.theme,
+      });
+      await refreshSchedule(editingId ? "Event saved." : "Event created.");
       setSelectedDate(fromDateKey(savedEvent.date));
       setVisibleMonth(startOfMonth(fromDateKey(savedEvent.date)));
-      setWorkspaceMessage(editingId ? "Event saved." : "Event created.");
     } catch (error) {
+      console.log("[Arcgenda diagnostics] before setEvents(saveEvent rollback)", {
+        previousEventCount: events.length,
+        nextEventCount: previousEvents.length,
+        userId: session?.user.id ?? readSession()?.user.id ?? null,
+        workspaceMutationVersion: workspaceMutationVersion.current,
+        workspaceLoadVersion: workspaceLoadVersion.current,
+        theme: settings.theme,
+      });
       setEvents(previousEvents);
+      console.log("[Arcgenda diagnostics] after setEvents(saveEvent rollback)", {
+        previousEventCount: events.length,
+        nextEventCount: previousEvents.length,
+        userId: session?.user.id ?? readSession()?.user.id ?? null,
+        workspaceMutationVersion: workspaceMutationVersion.current,
+        workspaceLoadVersion: workspaceLoadVersion.current,
+        theme: settings.theme,
+      });
       setWorkspaceMessage(error instanceof Error ? error.message : "Could not save event.");
       return;
     } finally {
@@ -1580,6 +1823,15 @@ export default function CalendarDashboard() {
 
   async function confirmCancelEvent() {
     if (!cancelTarget) return;
+    if (cancelTarget.recurrence !== "none" && cancelScope === "series-delete") {
+      const id = cancelTarget.id;
+      setCancelTarget(null);
+      setCancellationReason("");
+      setCancelScope("series-cancel");
+      await deleteEvent(id);
+      return;
+    }
+
     const action = `event:${cancelTarget.id}:cancel`;
     if (isBusy(action)) return;
     const previousEvents = events;
@@ -1594,6 +1846,7 @@ export default function CalendarDashboard() {
     );
     setCancelTarget(null);
     setCancellationReason("");
+    setCancelScope("series-cancel");
     setRescheduleTarget(optimisticCancelled);
     setRescheduleDraft({
       date: toDateKey(addDays(fromDateKey(cancelTarget.date), 1)),
@@ -1603,7 +1856,10 @@ export default function CalendarDashboard() {
     try {
       const payload = await apiJson<{ event: DbEvent }>(`/api/events/${cancelTarget.id}/cancel`, {
         method: "PATCH",
-        body: JSON.stringify({ cancellationReason }),
+        body: JSON.stringify({
+          cancellationReason,
+          cancellationScope: cancelTarget.recurrence === "none" ? "single" : "series",
+        }),
       });
       const cancelledEvent = mapEvent(payload.event);
       setEvents((current) =>
@@ -2029,28 +2285,7 @@ export default function CalendarDashboard() {
             calendarDisplayNames: settings.profile.calendarDisplayNames,
           }),
         }),
-        apiJson<{
-          preferences: {
-            eventReminders: boolean;
-            taskReminders: boolean;
-            dailyAgenda: boolean;
-            rescheduleReminders: boolean;
-            birthdayReminders: boolean;
-            desktopNotifications: boolean;
-            mobileNotifications: boolean;
-            quietHoursEnabled: boolean;
-            quietHoursStart: string;
-            quietHoursEnd: string;
-            soundEnabled: boolean;
-            vibrationEnabled: boolean;
-            defaultReminderMinutes: number;
-            aiEnabled: boolean;
-            aiScheduling: boolean;
-            aiInsights: boolean;
-            aiWeeklySummary: boolean;
-            privateMode: boolean;
-          };
-        }>("/api/settings/notifications", {
+        apiJson<{ preferences: DbNotificationPreferences }>("/api/settings/notifications", {
           method: "PATCH",
           body: JSON.stringify({
             eventReminders: settings.notifications.eventReminders,
@@ -2077,44 +2312,31 @@ export default function CalendarDashboard() {
 
       const preferences = notificationPayload.preferences;
       const savedTheme = normalizeTheme(profilePayload.user.theme);
-      const nextSettings: AppSettings = {
-        ...settings,
-        theme: savedTheme,
-        profile: {
+      const nextSettings = mapPreferencesToSettings(
+        preferences,
+        settings,
+        {
           ...settings.profile,
           accountName: profilePayload.user.name ?? "",
         },
-        notifications: {
-          eventReminders: preferences.eventReminders,
-          taskReminders: preferences.taskReminders,
-          dailyAgenda: preferences.dailyAgenda,
-          rescheduleReminders: preferences.rescheduleReminders,
-          birthdayReminders: preferences.birthdayReminders,
-          desktopNotifications: preferences.desktopNotifications,
-          mobileNotifications: preferences.mobileNotifications,
-          quietHours: preferences.quietHoursEnabled,
-          quietStart: preferences.quietHoursStart,
-          quietEnd: preferences.quietHoursEnd,
-          sound: preferences.soundEnabled,
-          vibration: preferences.vibrationEnabled,
-          defaultTiming:
-            preferences.defaultReminderMinutes === 0
-              ? "At time of event"
-              : `${preferences.defaultReminderMinutes} minutes before`,
-        },
-        ai: {
-          ...settings.ai,
-          enabled: preferences.aiEnabled,
-          scheduling: preferences.aiScheduling,
-          insights: preferences.aiInsights,
-          weeklySummary: preferences.aiWeeklySummary,
-          privateMode: preferences.privateMode,
-        },
-      };
+        savedTheme,
+      );
 
       setSettings(nextSettings);
       setSavedSettings(nextSettings);
-      localStorage.setItem("arcgenda-theme-hydration", nextSettings.theme);
+      setCalendars((current) =>
+        current.map((calendar) => ({
+          ...calendar,
+          members: calendar.members.map((member) =>
+            member.userId === session?.user.id
+              ? {
+                  ...member,
+                  displayName: nextSettings.profile.calendarDisplayNames[calendar.id] || undefined,
+                }
+              : member,
+          ),
+        })),
+      );
       applyDocumentTheme(nextSettings.theme);
       setSettingsMessage("Profile saved. Theme saved. Notifications saved. AI settings saved.");
     } catch (error) {
@@ -2227,10 +2449,11 @@ export default function CalendarDashboard() {
             onSettingsSectionChange={selectSettingsSection}
             query={query}
             setQuery={setQuery}
-            onAdd={openNewEvent}
+            onAdd={openNewItem}
             onLogout={() => {
               void createClient().auth.signOut();
               clearSession();
+              setSession(null);
               router.replace("/login");
             }}
           />
@@ -2289,6 +2512,7 @@ export default function CalendarDashboard() {
                   onCancel={(event) => {
                     setCancelTarget(event);
                     setCancellationReason(event.cancellationReason ?? "");
+                    setCancelScope("series-cancel");
                   }}
                   onDelete={deleteEvent}
                   onUndoCancel={undoCancelEvent}
@@ -2309,8 +2533,10 @@ export default function CalendarDashboard() {
             )}
             {activeTab === "tasks" && (
               <TasksTab
-                tasks={selectedTaskItems}
-                selectedDate={selectedDate}
+                tasks={visibleTaskItems}
+                taskView={taskView}
+                setTaskView={setTaskView}
+                title={taskViewTitle}
                 onToggle={toggleTask}
                 onDelete={deleteTask}
               />
@@ -2420,8 +2646,8 @@ export default function CalendarDashboard() {
               selectedDate={selectedDate}
               events={selectedEvents}
               reminders={selectedReminders}
-            tasks={taskItems}
-              alerts={alertItems}
+              tasks={selectedTaskItems}
+              alerts={selectedAlertItems}
             />
           )}
         </aside>
@@ -2463,7 +2689,9 @@ export default function CalendarDashboard() {
         <CancelEventModal
           event={cancelTarget}
           reason={cancellationReason}
+          scope={cancelScope}
           onReasonChange={setCancellationReason}
+          onScopeChange={setCancelScope}
           onClose={() => setCancelTarget(null)}
           onConfirm={confirmCancelEvent}
         />
@@ -2480,7 +2708,7 @@ export default function CalendarDashboard() {
       {deleteCalendarTarget && (
         <ConfirmModal
           title="Are you sure you want to delete this calendar?"
-          body={`"${deleteCalendarTarget.name}" will be deleted and its events will be archived in the current backend flow. This cannot be undone from this screen.`}
+          body={`"${deleteCalendarTarget.name}" will be deleted and its events will be archived by the API. This cannot be undone from this screen.`}
           confirmLabel="Delete calendar"
           danger
           onClose={() => setDeleteCalendarTarget(null)}
@@ -2534,7 +2762,7 @@ function Header({
         <button
           className="grid size-11 place-items-center rounded-full bg-[#1d1d1f] text-white shadow-lg shadow-black/20 transition active:scale-95"
           onClick={onAdd}
-          aria-label="Add event"
+          aria-label={activeTab === "tasks" ? "Add task" : "Add event"}
         >
           <CirclePlus size={23} strokeWidth={2.5} />
         </button>
@@ -3218,23 +3446,40 @@ function CalendarStrip({
 
 function TasksTab({
   tasks,
-  selectedDate,
+  taskView,
+  setTaskView,
+  title,
   onToggle,
   onDelete,
 }: {
   tasks: TaskListItem[];
-  selectedDate: Date;
+  taskView: TaskView;
+  setTaskView: (view: TaskView) => void;
+  title: string;
   onToggle: (taskId: string) => void;
   onDelete: (taskId: string) => void;
 }) {
-  const dayLabel = selectedDate.toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" });
-
   return (
     <section>
-      <SectionTitle eyebrow="Tasks" title={`Checklist for ${dayLabel}`} count={tasks.length} />
+      <SectionTitle eyebrow="Tasks" title={`Checklist for ${title}`} count={tasks.length} />
+      <div className="mb-4 grid grid-cols-3 rounded-full bg-white/60 p-1 text-sm font-bold shadow-sm backdrop-blur-xl">
+        {taskViewOptions.map((option) => (
+          <button
+            key={option}
+            type="button"
+            onClick={() => setTaskView(option)}
+            className={[
+              "h-9 rounded-full capitalize transition",
+              taskView === option ? "bg-[#1d1d1f] text-white shadow-lg shadow-black/15" : "text-[#636366]",
+            ].join(" ")}
+          >
+            {option}
+          </button>
+        ))}
+      </div>
       <div className="space-y-3">
         {tasks.length === 0 ? (
-          <EmptyState title="No tasks for this day." body="Move the calendar to another date to view its tasks." />
+          <EmptyState title={`No tasks for this ${taskView}.`} body="Switch the task range or move the calendar to another date." />
         ) : (
           tasks.map((task) => (
           <article
@@ -3753,6 +3998,7 @@ function SettingsTab({
         >
           <option value="At time of event">At time of event</option>
           <option value="5 minutes before">5 minutes before</option>
+          <option value="10 minutes before">10 minutes before</option>
           <option value="15 minutes before">15 minutes before</option>
           <option value="30 minutes before">30 minutes before</option>
           <option value="1 hour before">1 hour before</option>
@@ -4043,6 +4289,12 @@ function EventComposer({
   submitting: boolean;
 }) {
   const writableCalendars = calendars.filter((calendar) => calendar.role !== "viewer");
+  const eventStartDate = dateTimeFromDraft(draft.date, draft.time, draft.allDay);
+  const presetReminderPreview =
+    reminderDraft.enabled && reminderDraft.preset !== "custom"
+      ? reminderDateTimeFromPreset(eventStartDate, reminderDraft.preset)
+      : null;
+  const customReminderDisabled = draft.recurrence !== "none";
 
   return (
     <ModalShell>
@@ -4158,7 +4410,17 @@ function EventComposer({
             Move to calendar: viewers cannot move shared events. Linked tasks and reminders stay attached.
           </p>
           <FieldLabel label="Repeat">
-            <select value={draft.recurrence} onChange={(event) => onChange({ ...draft, recurrence: event.target.value as Recurrence })} className="input-shell w-full capitalize">
+            <select
+              value={draft.recurrence}
+              onChange={(event) => {
+                const recurrence = event.target.value as Recurrence;
+                onChange({ ...draft, recurrence });
+                if (recurrence !== "none" && reminderDraft.preset === "custom") {
+                  setReminderDraft({ ...reminderDraft, preset: "10m" });
+                }
+              }}
+              className="input-shell w-full capitalize"
+            >
               {recurrences.map((recurrence) => <option key={recurrence} value={recurrence}>{recurrence}</option>)}
             </select>
           </FieldLabel>
@@ -4176,20 +4438,67 @@ function EventComposer({
             <Toggle
               checked={reminderDraft.enabled}
               label="Reminder"
-              onClick={() => setReminderDraft({ ...reminderDraft, enabled: !reminderDraft.enabled })}
+              onClick={() =>
+                setReminderDraft({
+                  ...reminderDraft,
+                  enabled: !reminderDraft.enabled,
+                  preset:
+                    !reminderDraft.enabled && customReminderDisabled && reminderDraft.preset === "custom"
+                      ? "10m"
+                      : reminderDraft.preset,
+                })
+              }
             />
             {reminderDraft.enabled && (
-              <div className="mt-3 grid grid-cols-2 gap-3">
-                <input
-                  type="date"
-                  value={reminderDraft.date}
-                  onChange={(event) => setReminderDraft({ ...reminderDraft, date: event.target.value })}
-                  className="input-shell bg-white/70"
-                />
-                <AppleTimePicker
-                  value={reminderDraft.time}
-                  onChange={(time) => setReminderDraft({ ...reminderDraft, time })}
-                />
+              <div className="mt-3 space-y-3">
+                <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+                  {reminderPresets.map((preset) => {
+                    const disabled = preset.value === "custom" && customReminderDisabled;
+                    return (
+                      <button
+                        key={preset.value}
+                        type="button"
+                        disabled={disabled}
+                        onClick={() => setReminderDraft({ ...reminderDraft, preset: preset.value })}
+                        className={[
+                          "h-10 rounded-2xl px-2 text-xs font-black transition",
+                          reminderDraft.preset === preset.value
+                            ? "bg-[#007aff] text-white shadow-lg shadow-[#007aff]/20"
+                            : "bg-white/75 text-[#636366]",
+                          disabled ? "cursor-not-allowed opacity-45" : "active:scale-95",
+                        ].join(" ")}
+                      >
+                        {preset.label}
+                      </button>
+                    );
+                  })}
+                </div>
+                {customReminderDisabled && (
+                  <p className="text-xs font-bold text-[#8e8e93]">
+                    Custom reminder times are available for one-time events.
+                  </p>
+                )}
+                {reminderDraft.preset === "custom" && !customReminderDisabled ? (
+                  <div className="grid grid-cols-2 gap-3">
+                    <input
+                      type="date"
+                      value={reminderDraft.date}
+                      onChange={(event) => setReminderDraft({ ...reminderDraft, date: event.target.value })}
+                      className="input-shell bg-white/70"
+                    />
+                    <AppleTimePicker
+                      value={reminderDraft.time}
+                      onChange={(time) => setReminderDraft({ ...reminderDraft, time })}
+                    />
+                  </div>
+                ) : (
+                  presetReminderPreview && (
+                    <p className="rounded-2xl bg-white/70 px-3 py-2 text-xs font-bold text-[#636366]">
+                      Reminder alerts on {formatLongDate(fromDateKey(presetReminderPreview.date))} at{" "}
+                      {presetReminderPreview.time}.
+                    </p>
+                  )
+                )}
               </div>
             )}
           </div>
@@ -4352,25 +4661,64 @@ function FieldLabel({
 function CancelEventModal({
   event,
   reason,
+  scope,
   onReasonChange,
+  onScopeChange,
   onClose,
   onConfirm,
 }: {
   event: CalendarEvent;
   reason: string;
+  scope: CancelScope;
   onReasonChange: (reason: string) => void;
+  onScopeChange: (scope: CancelScope) => void;
   onClose: () => void;
   onConfirm: () => void;
 }) {
+  const repeating = event.recurrence !== "none";
+  const confirmLabel = repeating && scope === "series-delete" ? "Delete series" : "Cancel event";
+
   return (
     <ModalShell>
       <div className="w-full max-w-md rounded-[32px] border border-white/70 bg-white/90 p-4 shadow-2xl shadow-black/20 backdrop-blur-2xl">
         <ModalHeader title={event.title} eyebrow="Cancel event" onClose={onClose} />
         <p className="text-sm font-semibold leading-6 text-[#636366]">This keeps the event in your calendar as cancelled, including the reason and cancellation time.</p>
+        {repeating && (
+          <div className="mt-4 space-y-2">
+            <button
+              type="button"
+              className={`w-full rounded-2xl border px-4 py-3 text-left text-sm font-bold ${
+                scope === "series-cancel"
+                  ? "border-[#007aff] bg-[#eaf4ff] text-[#0057b8]"
+                  : "border-[#e5e5ea] bg-[#f8f8fb] text-[#3a3a3c]"
+              }`}
+              onClick={() => onScopeChange("series-cancel")}
+            >
+              Cancel this repeating event
+              <span className="mt-1 block text-xs font-semibold text-[#636366]">
+                Keep the series in the calendar and mark it as cancelled.
+              </span>
+            </button>
+            <button
+              type="button"
+              className={`w-full rounded-2xl border px-4 py-3 text-left text-sm font-bold ${
+                scope === "series-delete"
+                  ? "border-[#ff3b30] bg-[#fff0ef] text-[#b42318]"
+                  : "border-[#e5e5ea] bg-[#f8f8fb] text-[#3a3a3c]"
+              }`}
+              onClick={() => onScopeChange("series-delete")}
+            >
+              Delete the repeating event
+              <span className="mt-1 block text-xs font-semibold text-[#636366]">
+                Remove the whole series from active calendar views.
+              </span>
+            </button>
+          </div>
+        )}
         <textarea value={reason} onChange={(event) => onReasonChange(event.target.value)} className="mt-4 min-h-28 w-full resize-none rounded-2xl bg-[#f2f2f7] px-4 py-3 text-sm font-semibold outline-none" placeholder="Optional cancellation reason" />
         <div className="mt-4 grid grid-cols-2 gap-3">
           <button type="button" className="h-12 rounded-full bg-[#f2f2f7] text-base font-bold" onClick={onClose}>Keep event</button>
-          <button type="button" className="h-12 rounded-full bg-[#ff3b30] text-base font-bold text-white shadow-lg shadow-[#ff3b30]/25" onClick={onConfirm}>Cancel event</button>
+          <button type="button" className="h-12 rounded-full bg-[#ff3b30] text-base font-bold text-white shadow-lg shadow-[#ff3b30]/25" onClick={onConfirm}>{confirmLabel}</button>
         </div>
       </div>
     </ModalShell>
@@ -4518,7 +4866,7 @@ function DesktopPanel({
         </div>
       </section>
       <section className="overflow-y-auto rounded-[36px] border border-white/55 bg-white/58 p-6 pb-10 shadow-2xl shadow-[#6d5dfc]/10 backdrop-blur-3xl">
-        <SectionTitle eyebrow="Planner" title="Today at a glance" count={events.length} />
+        <SectionTitle eyebrow="Planner" title="Selected day at a glance" count={events.length} />
         <div className="grid grid-cols-2 gap-4">
           {events.map((event) => (
             <article key={event.id} className="rounded-[24px] bg-white/70 p-4 shadow-lg shadow-black/5">

@@ -3,7 +3,6 @@
 # dependencies
 /.agents
 /node_modules
-/backend/node_modules
 /.npm
 /.pnp
 .pnp.*
@@ -23,7 +22,6 @@
 # production
 /build
 /dist
-/backend/dist
 
 # misc
 .DS_Store
@@ -42,13 +40,10 @@ backend/npm-debug.log*
 # env files (can opt-in for committing if needed)
 .env*
 !.env.example
-!backend/.env.example
 
 # prisma / database local artifacts
 *.db
 *.db-journal
-/backend/prisma/dev.db
-/backend/prisma/dev.db-journal
 
 # vercel
 .vercel

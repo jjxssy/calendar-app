@@ -20,7 +20,7 @@ export function HelpContent() {
         Calendars are big containers such as Personal, Family, School, or Project. Tags are smaller labels such as Health, Study, Errands, or Important. The free plan allows up to 3 calendars total, and shared calendars count too.
       </InfoCard>
       <InfoCard title="Shared calendars and roles">
-        One shared calendar is included for free. Owners manage the calendar, editors can help add or change events, and viewers are read-only. Invite email delivery is prepared as a placeholder until a mail backend is configured.
+        One shared calendar is included for free. Owners manage the calendar, editors can help add or change events, and viewers are read-only. Invite email delivery is prepared as a placeholder until a mail service is configured.
       </InfoCard>
       <InfoCard title="Specific event sharing">
         Event sharing is separate from sharing a whole calendar. You can prepare a share for one event with a selected email. Actual invite delivery is not faked yet.
@@ -29,7 +29,7 @@ export function HelpContent() {
         Shared calendar and event actions are prepared to write simple history such as created, updated, cancelled, archived, and share-prepared entries.
       </InfoCard>
       <InfoCard title="Notifications">
-        Notification settings include event reminders, task reminders, daily agenda, reschedule reminders, birthdays, desktop/PWA notifications, quiet hours, sound, vibration, and default reminder timing. Full push delivery needs browser support and a push backend.
+        Notification settings include event reminders, task reminders, daily agenda, reschedule reminders, birthdays, desktop/PWA notifications, quiet hours, sound, vibration, and default reminder timing. Full push delivery needs browser support and a push service.
       </InfoCard>
       <InfoCard title="AI Lite and privacy">
         AI Lite is off by default. Current suggestions are local rule-based text from visible calendar stats. Future OpenAI or Claude integrations would be opt-in. Your data is not sold.

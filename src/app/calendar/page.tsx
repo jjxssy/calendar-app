@@ -1,5 +1,5 @@
-import CalendarDashboard from "@/components/calendar-dashboard";
+import { CalendarDashboardLoader } from "@/components/calendar-dashboard-loader";
 
 export default function CalendarPage() {
-  return <CalendarDashboard />;
+  return <CalendarDashboardLoader />;
 }

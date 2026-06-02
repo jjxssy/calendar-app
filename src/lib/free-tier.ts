@@ -57,27 +57,6 @@ export type CalendarStats = {
   monthlySummary: string;
 };
 
-export const defaultCalendars: AppCalendar[] = [
-  {
-    id: "personal",
-    name: "Personal",
-    color: "#007aff",
-    visible: true,
-    shared: false,
-    role: "owner",
-    members: [],
-  },
-  {
-    id: "work",
-    name: "Work",
-    color: "#34c759",
-    visible: true,
-    shared: false,
-    role: "owner",
-    members: [],
-  },
-];
-
 export const defaultSettings: AppSettings = {
   theme: "system",
   profile: {

@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 
 const priorities = ["low", "normal", "high", "urgent"] as const;
 const statuses = ["scheduled", "completed", "cancelled", "archived"] as const;
+const recurrences = ["none", "daily", "weekly", "monthly", "yearly"] as const;
 
 function priorityValue(value: unknown) {
   if (value === undefined) return undefined;
@@ -19,6 +20,14 @@ function statusValue(value: unknown) {
     throw new ApiError("status must be scheduled, completed, cancelled, or archived.");
   }
   return value as (typeof statuses)[number];
+}
+
+function recurrenceValue(value: unknown) {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || !recurrences.includes(value as never)) {
+    throw new ApiError("recurrence must be none, daily, weekly, monthly, or yearly.");
+  }
+  return value as (typeof recurrences)[number];
 }
 
 export async function GET(request: Request) {
@@ -64,6 +73,12 @@ export async function GET(request: Request) {
         shares: true,
       },
       orderBy: [{ pinned: "desc" }, { startDate: "asc" }],
+    });
+
+    console.log("[Arcgenda API] GET /api/events", {
+      userId: user.id,
+      eventCount: events.length,
+      eventIds: events.map((event) => event.id),
     });
 
     return ok({ events: await withEventActors(events) });
@@ -123,6 +138,7 @@ export async function POST(request: Request) {
           location: stringValue(body.location),
           url: stringValue(body.url),
           priority: priorityValue(body.priority) ?? "normal",
+          recurrence: recurrenceValue(body.recurrence) ?? "none",
           pinned: booleanValue(body.pinned) ?? false,
         },
         include: {
@@ -145,6 +161,45 @@ export async function POST(request: Request) {
       });
 
       return created;
+    });
+
+    console.log("[Arcgenda API] POST /api/events created", {
+      userId: user.id,
+      createdEventId: event.id,
+      createdEventCalendarId: event.calendarId,
+      createdById: event.createdById,
+      ownerId: event.calendar?.ownerId ?? null,
+    });
+
+    const sameUserCanRetrieveCreatedEvent = await prisma.event.findMany({
+      where: {
+        AND: [
+          { id: event.id },
+          {
+            OR: [
+              { userId: user.id },
+              { calendar: { members: { some: { userId: user.id, status: "accepted" } } } },
+              { shares: { some: { userId: user.id, status: "accepted" } } },
+            ],
+          },
+        ],
+        status: { not: "archived" },
+      },
+      select: {
+        id: true,
+        userId: true,
+        calendarId: true,
+        createdById: true,
+        status: true,
+      },
+    });
+
+    console.log("[Arcgenda API] POST /api/events immediate GET visibility check", {
+      userId: user.id,
+      createdEventId: event.id,
+      visibleCount: sameUserCanRetrieveCreatedEvent.length,
+      visibleEventIds: sameUserCanRetrieveCreatedEvent.map((visibleEvent) => visibleEvent.id),
+      visibleEvents: sameUserCanRetrieveCreatedEvent,
     });
 
     return ok({ event: await withEventActor(event) }, 201);

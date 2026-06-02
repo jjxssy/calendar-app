@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 
 const priorities = ["low", "normal", "high", "urgent"] as const;
 const statuses = ["scheduled", "completed", "cancelled", "archived"] as const;
+const recurrences = ["none", "daily", "weekly", "monthly", "yearly"] as const;
 
 function priorityValue(value: unknown) {
   if (value === undefined) return undefined;
@@ -19,6 +20,14 @@ function statusValue(value: unknown) {
     throw new ApiError("status must be scheduled, completed, cancelled, or archived.");
   }
   return value as (typeof statuses)[number];
+}
+
+function recurrenceValue(value: unknown) {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || !recurrences.includes(value as never)) {
+    throw new ApiError("recurrence must be none, daily, weekly, monthly, or yearly.");
+  }
+  return value as (typeof recurrences)[number];
 }
 
 export async function PATCH(request: Request, context: { params: Promise<{ id: string }> }) {
@@ -49,6 +58,7 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
           location: stringValue(body.location),
           url: stringValue(body.url),
           priority: priorityValue(body.priority),
+          recurrence: recurrenceValue(body.recurrence),
           pinned: booleanValue(body.pinned),
           status: statusValue(body.status),
         },

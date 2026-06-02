@@ -23,7 +23,7 @@ export function FeaturesContent() {
         Free users can use one shared calendar with owner, editor, and viewer roles. The app prepares activity history such as created by and last edited by.
       </InfoCard>
       <InfoCard title="Specific event sharing">
-        Share one event without sharing a whole calendar. The UI and data structure are prepared, while real invite delivery remains safely marked until an email backend is configured.
+        Share one event without sharing a whole calendar. The UI and data structure are prepared, while real invite delivery remains safely marked until an email service is configured.
       </InfoCard>
       <InfoCard title="Notifications and reminders">
         Arcgenda organizes event reminders, task reminders, daily agenda reminders, reschedule reminders, birthday reminders, desktop notifications, and PWA notification settings.

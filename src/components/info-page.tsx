@@ -4,6 +4,17 @@ import { BrandMark } from "@/components/brand/brand-mark";
 import { PublicFooter } from "@/components/public-nav/public-footer";
 import { PublicNavbar } from "@/components/public-nav/public-navbar";
 
+const pageRouteByTitle: Record<string, string> = {
+  "About Arcgenda": "/about",
+  "Cookie Policy": "/cookies",
+  "Everything included in Arcgenda": "/features",
+  "Feedback and support": "/contact",
+  "Get Arcgenda": "/get-app",
+  "How Arcgenda works": "/help",
+  "Privacy Policy": "/privacy",
+  "Terms of Service": "/terms",
+};
+
 export function InfoPage({
   eyebrow,
   title,
@@ -22,7 +33,7 @@ export function InfoPage({
         <div className="absolute right-[-90px] top-28 size-72 rounded-full bg-[#7dd3fc]/50 blur-3xl" />
         <div className="absolute bottom-[-120px] left-12 size-80 rounded-full bg-[#fef08a]/40 blur-3xl" />
       </div>
-      <PublicNavbar />
+      <PublicNavbar activeHref={pageRouteByTitle[title]} />
       <section className="relative mx-auto max-w-3xl">
         <Link
           href="/"

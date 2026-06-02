@@ -11,12 +11,11 @@ export type AppSession = {
 
 const SESSION_STORAGE_KEY = "arcgenda-session";
 const LEGACY_SESSION_STORAGE_KEY = "luma-calendar-session";
-const DATA_STORAGE_PREFIX = "arcgenda-data";
-const LEGACY_DATA_STORAGE_PREFIX = "luma-calendar-data";
 
-export async function syncCurrentUser() {
+export async function syncCurrentUser(accessToken?: string) {
   const response = await fetch("/api/users/me", {
     method: "POST",
+    headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : undefined,
   });
 
   if (!response.ok) {
@@ -33,7 +32,10 @@ export function saveSession(session: AppSession) {
 }
 
 export function readSession() {
-  const raw = readSessionSnapshot();
+  if (typeof window === "undefined") return null;
+  const raw =
+    localStorage.getItem(SESSION_STORAGE_KEY) ??
+    localStorage.getItem(LEGACY_SESSION_STORAGE_KEY);
   if (!raw) return null;
 
   try {
@@ -48,24 +50,7 @@ export function readSession() {
   }
 }
 
-export function readSessionSnapshot() {
-  if (typeof window === "undefined") return null;
-
-  return (
-    localStorage.getItem(SESSION_STORAGE_KEY) ??
-    localStorage.getItem(LEGACY_SESSION_STORAGE_KEY)
-  );
-}
-
 export function clearSession() {
   localStorage.removeItem(SESSION_STORAGE_KEY);
   localStorage.removeItem(LEGACY_SESSION_STORAGE_KEY);
-}
-
-export function sessionStorageKey(session: AppSession) {
-  return `${DATA_STORAGE_PREFIX}:${session.user.id ?? session.user.email}`;
-}
-
-export function legacySessionStorageKey(session: AppSession) {
-  return `${LEGACY_DATA_STORAGE_PREFIX}:${session.user.id ?? session.user.email}`;
 }

@@ -7,12 +7,19 @@ config({ path: ".env" });
 config({ path: ".env.local", override: true });
 
 const databaseUrl = process.env["DATABASE_URL"];
+const isGenerateCommand = process.argv.includes("generate");
 
-if (!databaseUrl || databaseUrl.includes("prisma+postgres://localhost")) {
+if (
+  !isGenerateCommand &&
+  (!databaseUrl || databaseUrl.includes("prisma+postgres://localhost"))
+) {
   throw new Error(
     "DATABASE_URL must be set in .env.local to your private Supabase Postgres connection string.",
   );
 }
+
+const generateOnlyDatabaseUrl =
+  "postgresql://prisma:prisma@localhost:5432/prisma";
 
 export default defineConfig({
   schema: "prisma/schema.prisma",
@@ -20,6 +27,6 @@ export default defineConfig({
     path: "prisma/migrations",
   },
   datasource: {
-    url: databaseUrl,
+    url: databaseUrl ?? generateOnlyDatabaseUrl,
   },
 });

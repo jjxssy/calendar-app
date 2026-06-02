@@ -165,7 +165,6 @@ Arcgenda Calendar includes:
 
 - `public/manifest.webmanifest`
 - `public/sw.js`
-- `public/register-sw.js`
 - iOS standalone metadata in `src/app/layout.tsx`
 - safe-area viewport support
 

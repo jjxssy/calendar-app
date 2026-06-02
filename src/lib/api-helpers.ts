@@ -1,4 +1,6 @@
 import { cookies } from "next/headers";
+import { headers } from "next/headers";
+import { createClient as createSupabaseClient } from "@supabase/supabase-js";
 import { createClient } from "@/utils/supabase/server";
 import { prisma } from "@/lib/prisma";
 
@@ -56,30 +58,57 @@ export function dateValue(value: unknown, fieldName: string) {
   return date;
 }
 
+async function upsertSupabaseUser(user: {
+  id: string;
+  email?: string | null;
+  user_metadata?: { name?: string; full_name?: string };
+}) {
+  if (!user.email) {
+    throw new ApiError("Your account needs an email address.", 400);
+  }
+
+  return prisma.user.upsert({
+    where: { id: user.id },
+    update: {
+      email: user.email,
+    },
+    create: {
+      id: user.id,
+      email: user.email,
+      name: user.user_metadata?.name ?? user.user_metadata?.full_name,
+    },
+  });
+}
+
 export async function requireUser() {
   const cookieStore = await cookies();
   const supabase = createClient(cookieStore);
   const { data, error } = await supabase.auth.getUser();
 
-  if (error || !data.user) {
-    throw new ApiError("You must be signed in.", 401);
+  if (!error && data.user) {
+    return upsertSupabaseUser(data.user);
   }
 
-  if (!data.user.email) {
-    throw new ApiError("Your account needs an email address.", 400);
+  const authorization = (await headers()).get("authorization");
+  const token = authorization?.match(/^Bearer\s+(.+)$/i)?.[1];
+  if (token) {
+    const authClient = createSupabaseClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY!,
+      {
+        auth: {
+          persistSession: false,
+          autoRefreshToken: false,
+        },
+      },
+    );
+    const tokenUser = await authClient.auth.getUser(token);
+    if (!tokenUser.error && tokenUser.data.user) {
+      return upsertSupabaseUser(tokenUser.data.user);
+    }
   }
 
-  return prisma.user.upsert({
-    where: { id: data.user.id },
-    update: {
-      email: data.user.email,
-    },
-    create: {
-      id: data.user.id,
-      email: data.user.email,
-      name: data.user.user_metadata?.name ?? data.user.user_metadata?.full_name,
-    },
-  });
+  throw new ApiError("You must be signed in.", 401);
 }
 
 export async function ensureEvent(userId: string, eventId: string) {

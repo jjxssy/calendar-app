@@ -21,6 +21,14 @@ enum Priority {
   urgent
 }
 
+enum Recurrence {
+  none
+  daily
+  weekly
+  monthly
+  yearly
+}
+
 enum CalendarRole {
   owner
   editor
@@ -130,6 +138,7 @@ model Event {
   location           String?
   url                String?
   priority           Priority    @default(normal)
+  recurrence         Recurrence  @default(none)
   pinned             Boolean     @default(false)
   status             EventStatus @default(scheduled)
   cancellationReason String?

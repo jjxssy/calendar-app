@@ -54,18 +54,18 @@ export default function RootLayout({
   return (
     <html
       lang="en"
+      data-scroll-behavior="smooth"
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
       suppressHydrationWarning
     >
       <body className="min-h-full flex flex-col">
+        {children}
         <script
           dangerouslySetInnerHTML={{
             __html:
-              "try{var t=localStorage.getItem('arcgenda-theme-hydration')||'system';if(t==='white')t='light';if(['system','light','dark'].indexOf(t)<0)t='system';var d=t==='dark'||(t==='system'&&window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches);document.documentElement.dataset.theme=t;document.documentElement.classList.toggle('dark',d)}catch(e){}",
+              "if('serviceWorker'in navigator){addEventListener('load',function(){var r=function(){navigator.serviceWorker.register('/sw.js').catch(function(e){console.warn('Service worker registration failed:',e)})};'requestIdleCallback'in window?requestIdleCallback(r,{timeout:3000}):setTimeout(r,1200)})}",
           }}
         />
-        {children}
-        <script src="/register-sw.js" async />
       </body>
     </html>
   );

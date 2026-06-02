@@ -11,6 +11,8 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
     const reminderAt = dateValue(body.reminderAt, "reminderAt");
     const createRescheduleReminder = booleanValue(body.createRescheduleReminder) ?? false;
     const createRescheduleTask = booleanValue(body.createRescheduleTask) ?? false;
+    const cancellationScope =
+      stringValue(body.cancellationScope) === "series" ? "series" : "single";
 
     if ((createRescheduleReminder || createRescheduleTask) && !reminderAt) {
       throw new ApiError("reminderAt is required when creating a reschedule reminder or task.");
@@ -64,7 +66,9 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
           eventId: id,
           userId: user.id,
           action: "event.cancelled",
-          details: stringValue(body.cancellationReason) ?? `Cancelled "${event.title}"`,
+          details:
+            stringValue(body.cancellationReason) ??
+            `Cancelled ${cancellationScope === "series" ? "series" : "event"} "${event.title}"`,
         },
       });
 
