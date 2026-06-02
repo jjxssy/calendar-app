@@ -14,7 +14,8 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "Arcgenda",
-  description: "A fast iPhone-style calendar and productivity PWA built with Next.js.",
+  description:
+    "A fast iPhone-style calendar and productivity PWA built with Next.js.",
   applicationName: "Arcgenda",
   manifest: "/manifest.webmanifest",
   appleWebApp: {
@@ -28,10 +29,20 @@ export const metadata: Metadata = {
   icons: {
     icon: [
       { url: "/icons/arcgenda-icon-32.png", sizes: "32x32", type: "image/png" },
-      { url: "/icons/arcgenda-icon-192.png", sizes: "192x192", type: "image/png" },
+      {
+        url: "/icons/arcgenda-icon-192.png",
+        sizes: "192x192",
+        type: "image/png",
+      },
       { url: "/favicon.ico" },
     ],
-    apple: [{ url: "/icons/arcgenda-icon-180.png", sizes: "180x180", type: "image/png" }],
+    apple: [
+      {
+        url: "/icons/arcgenda-icon-180.png",
+        sizes: "180x180",
+        type: "image/png",
+      },
+    ],
   },
 };
 
@@ -59,6 +70,12 @@ export default function RootLayout({
       suppressHydrationWarning
     >
       <body className="min-h-full flex flex-col">
+        <script
+          dangerouslySetInnerHTML={{
+            __html:
+              "try{var t=localStorage.getItem('arcgenda-theme')||'system';var d=t==='dark'||(t==='system'&&matchMedia('(prefers-color-scheme: dark)').matches);document.documentElement.dataset.theme=t;document.documentElement.classList.toggle('dark',d)}catch(e){}",
+          }}
+        />
         {children}
         <script
           dangerouslySetInnerHTML={{

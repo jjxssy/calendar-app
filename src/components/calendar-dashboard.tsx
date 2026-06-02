@@ -28,13 +28,7 @@ import {
   X,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
-import {
-  FormEvent,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { AppSession, clearSession, readSession, saveSession } from "@/lib/api";
 import { createClient } from "@/utils/supabase/client";
 import {
@@ -192,7 +186,11 @@ type DbTask = {
   description?: string | null;
   completed: boolean;
   dueDate?: string | null;
-  event?: { id: string; title: string; status?: CalendarEvent["status"] } | null;
+  event?: {
+    id: string;
+    title: string;
+    status?: CalendarEvent["status"];
+  } | null;
 };
 
 type DbReminder = {
@@ -229,7 +227,12 @@ type DbEvent = {
   category?: DbCategory | null;
   tasks: DbTask[];
   reminders: DbReminder[];
-  shares?: Array<{ id: string; email: string; role: "editor" | "viewer"; status: "pending" | "accepted" }>;
+  shares?: Array<{
+    id: string;
+    email: string;
+    role: "editor" | "viewer";
+    status: "pending" | "accepted";
+  }>;
 };
 
 type DbNotificationPreferences = {
@@ -255,8 +258,18 @@ type DbNotificationPreferences = {
 
 const viewOptions: CalendarView[] = ["month", "week", "day"];
 const taskViewOptions: TaskView[] = ["day", "week", "month"];
-const recurrences: Recurrence[] = ["none", "daily", "weekly", "monthly", "yearly"];
-const reminderPresets: Array<{ value: ReminderPreset; label: string; minutes?: number }> = [
+const recurrences: Recurrence[] = [
+  "none",
+  "daily",
+  "weekly",
+  "monthly",
+  "yearly",
+];
+const reminderPresets: Array<{
+  value: ReminderPreset;
+  label: string;
+  minutes?: number;
+}> = [
   { value: "5m", label: "5 min before", minutes: 5 },
   { value: "10m", label: "10 min before", minutes: 10 },
   { value: "30m", label: "30 min before", minutes: 30 },
@@ -264,7 +277,19 @@ const reminderPresets: Array<{ value: ReminderPreset; label: string; minutes?: n
   { value: "1d", label: "1 day before", minutes: 1440 },
   { value: "custom", label: "Custom" },
 ];
-const timelineSlots = ["08:00", "09:00", "10:00", "11:00", "12:00", "13:00", "14:00", "15:00", "16:00", "17:00", "18:00"];
+const timelineSlots = [
+  "08:00",
+  "09:00",
+  "10:00",
+  "11:00",
+  "12:00",
+  "13:00",
+  "14:00",
+  "15:00",
+  "16:00",
+  "17:00",
+  "18:00",
+];
 const settingsNavigation: Array<{ id: SettingsSectionId; label: string }> = [
   { id: "profile", label: "Profile" },
   { id: "calendars", label: "Calendars" },
@@ -290,10 +315,13 @@ const colorGrid = [
   "#1d1d1f",
 ];
 
-let serviceWorkerRegistrationPromise: Promise<ServiceWorkerRegistration | null> | null = null;
+let serviceWorkerRegistrationPromise: Promise<ServiceWorkerRegistration | null> | null =
+  null;
 
 function createId() {
-  return globalThis.crypto?.randomUUID?.() ?? `id-${Date.now()}-${Math.random()}`;
+  return (
+    globalThis.crypto?.randomUUID?.() ?? `id-${Date.now()}-${Math.random()}`
+  );
 }
 
 function currentTimeValue(date = new Date()) {
@@ -328,7 +356,8 @@ async function registerServiceWorker() {
 }
 
 async function showArcgendaNotification(body: string, vibrate: boolean) {
-  if (!("Notification" in window) || Notification.permission !== "granted") return false;
+  if (!("Notification" in window) || Notification.permission !== "granted")
+    return false;
 
   const options: NotificationOptions = {
     body,
@@ -367,13 +396,24 @@ function normalizeTheme(value: unknown): AppSettings["theme"] {
   return "system";
 }
 
-function applyDocumentTheme(theme: AppSettings["theme"]) {
+const THEME_STORAGE_KEY = "arcgenda-theme";
+
+function applyDocumentTheme(theme: AppSettings["theme"], cache = true) {
   if (typeof window === "undefined") return;
+
+  const normalizedTheme = normalizeTheme(theme);
   const root = document.documentElement;
-  const systemDark = window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? false;
-  const dark = theme === "dark" || (theme === "system" && systemDark);
-  root.dataset.theme = theme;
+  const systemDark =
+    window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? false;
+  const dark =
+    normalizedTheme === "dark" || (normalizedTheme === "system" && systemDark);
+
+  root.dataset.theme = normalizedTheme;
   root.classList.toggle("dark", dark);
+
+  if (cache) {
+    window.localStorage.setItem(THEME_STORAGE_KEY, normalizedTheme);
+  }
 }
 
 async function apiJson<T>(url: string, init?: RequestInit) {
@@ -382,30 +422,52 @@ async function apiJson<T>(url: string, init?: RequestInit) {
       ? undefined
       : (await createClient().auth.getSession()).data.session?.access_token ??
         readSession()?.accessToken;
-  const response = await fetch(url, {
+
+  const method = init?.method?.toUpperCase() ?? "GET";
+  const requestUrl =
+    method === "GET"
+      ? `${url}${url.includes("?") ? "&" : "?"}_=${Date.now()}`
+      : url;
+
+  const response = await fetch(requestUrl, {
     ...init,
+    cache: "no-store",
     headers: {
       "Content-Type": "application/json",
+      "Cache-Control": "no-cache, no-store, must-revalidate",
+      Pragma: "no-cache",
+      Expires: "0",
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...init?.headers,
     },
   });
+
   const payload = await response.json().catch(() => ({}));
+
   if (!response.ok) {
     throw new Error(payload.error ?? "Request failed.");
   }
+
   return payload as T;
 }
 
-function mapCalendar(calendar: DbCalendar, session: AppSession | null): AppCalendar {
-  const ownMember = calendar.members.find((member) => member.userId === session?.user.id);
+function mapCalendar(
+  calendar: DbCalendar,
+  session: AppSession | null,
+): AppCalendar {
+  const ownMember = calendar.members.find(
+    (member) => member.userId === session?.user.id,
+  );
   return {
     id: calendar.id,
     name: calendar.name,
     color: calendar.color,
     visible: calendar.visible,
     shared: calendar.shared || calendar.members.length > 1,
-    role: calendar.ownerId === session?.user.id ? "owner" : ownMember?.role ?? "viewer",
+    role:
+      calendar.ownerId === session?.user.id
+        ? "owner"
+        : (ownMember?.role ?? "viewer"),
     members: calendar.members.map((member) => ({
       id: member.id,
       userId: member.userId,
@@ -435,7 +497,9 @@ function displayNameForUser(
   calendar?: DbCalendar | null,
 ) {
   if (!user?.id) return "Unknown user";
-  const memberName = calendar?.members.find((member) => member.userId === user.id)?.displayName;
+  const memberName = calendar?.members.find(
+    (member) => member.userId === user.id,
+  )?.displayName;
   return memberName || user.name || user.email || "Unknown user";
 }
 
@@ -443,9 +507,13 @@ function formatDuration(startDate: string, endDate?: string | null) {
   if (!endDate) return "30m";
   const minutes = Math.max(
     15,
-    Math.round((new Date(endDate).getTime() - new Date(startDate).getTime()) / 60000),
+    Math.round(
+      (new Date(endDate).getTime() - new Date(startDate).getTime()) / 60000,
+    ),
   );
-  return minutes >= 60 && minutes % 60 === 0 ? `${minutes / 60}h` : `${minutes}m`;
+  return minutes >= 60 && minutes % 60 === 0
+    ? `${minutes / 60}h`
+    : `${minutes}m`;
 }
 
 function mapReminder(reminder: DbReminder): RescheduleReminder {
@@ -503,8 +571,12 @@ function mapStandaloneTask(task: DbTask, today: Date): StandaloneTask {
     id: task.id,
     title: task.title,
     done: task.completed,
-    reminderDate: task.dueDate ? toDateKey(new Date(task.dueDate)) : toDateKey(today),
-    reminderTime: task.dueDate ? currentTimeValue(new Date(task.dueDate)) : currentTimeValue(),
+    reminderDate: task.dueDate
+      ? toDateKey(new Date(task.dueDate))
+      : toDateKey(today),
+    reminderTime: task.dueDate
+      ? currentTimeValue(new Date(task.dueDate))
+      : currentTimeValue(),
     eventId: null,
     eventTitle: "Standalone task",
     notificationSentAt: null,
@@ -552,14 +624,18 @@ function mapPreferencesToSettings(
 
 function dateTimeFromDraft(date: string, time: string, allDay: boolean) {
   const [year, month, day] = date.split("-").map(Number);
-  const [hour = 9, minute = 0] = (allDay ? "00:00" : time || "09:00").split(":").map(Number);
+  const [hour = 9, minute = 0] = (allDay ? "00:00" : time || "09:00")
+    .split(":")
+    .map(Number);
   return new Date(year, month - 1, day, hour, minute, 0).toISOString();
 }
 
 function reminderDateTimeFromPreset(startDate: string, preset: ReminderPreset) {
   const presetConfig = reminderPresets.find((item) => item.value === preset);
   const reminderDate = new Date(startDate);
-  reminderDate.setMinutes(reminderDate.getMinutes() - (presetConfig?.minutes ?? 10));
+  reminderDate.setMinutes(
+    reminderDate.getMinutes() - (presetConfig?.minutes ?? 10),
+  );
   return {
     date: toDateKey(reminderDate),
     time: currentTimeValue(reminderDate),
@@ -574,7 +650,9 @@ function resolveReminderDateTime(
   if (!draft.enabled) return null;
   if (draft.preset === "custom") {
     if (recurrence !== "none") {
-      throw new Error("Custom reminders are only available for one-time events.");
+      throw new Error(
+        "Custom reminders are only available for one-time events.",
+      );
     }
     return { date: draft.date, time: draft.time };
   }
@@ -582,7 +660,8 @@ function resolveReminderDateTime(
 }
 
 function minutesFromDuration(duration: string) {
-  if (duration.endsWith("h")) return Number(duration.replace("h", "")) * 60 || 60;
+  if (duration.endsWith("h"))
+    return Number(duration.replace("h", "")) * 60 || 60;
   return Number(duration.replace("m", "")) || 30;
 }
 
@@ -597,13 +676,19 @@ function reminderDueAt(reminder: { date: string; time: string }) {
   return new Date(`${reminder.date}T${reminder.time}`);
 }
 
-function isReminderDueNow(reminder: { date: string; time: string }, now = new Date()) {
+function isReminderDueNow(
+  reminder: { date: string; time: string },
+  now = new Date(),
+) {
   const due = reminderDueAt(reminder).getTime();
   const current = now.getTime();
   return due >= current - 2 * 60 * 1000 && due <= current + 30 * 1000;
 }
 
-function isReminderTooOld(reminder: { date: string; time: string }, now = new Date()) {
+function isReminderTooOld(
+  reminder: { date: string; time: string },
+  now = new Date(),
+) {
   return reminderDueAt(reminder).getTime() < now.getTime() - 5 * 60 * 1000;
 }
 
@@ -614,16 +699,22 @@ function isFutureDateTime(date: string, time: string) {
 function isQuietTime(settings: NotificationSettings, now = new Date()) {
   if (!settings.quietHours) return false;
   const current = now.getHours() * 60 + now.getMinutes();
-  const [startHour = 22, startMinute = 0] = settings.quietStart.split(":").map(Number);
+  const [startHour = 22, startMinute = 0] = settings.quietStart
+    .split(":")
+    .map(Number);
   const [endHour = 7, endMinute = 0] = settings.quietEnd.split(":").map(Number);
   const start = startHour * 60 + startMinute;
   const end = endHour * 60 + endMinute;
-  return start <= end ? current >= start && current <= end : current >= start || current <= end;
+  return start <= end
+    ? current >= start && current <= end
+    : current >= start || current <= end;
 }
 
 function deviceNotificationsEnabled(settings: NotificationSettings) {
   const mobileDevice = detectMobileDevice();
-  return mobileDevice ? settings.mobileNotifications : settings.desktopNotifications;
+  return mobileDevice
+    ? settings.mobileNotifications
+    : settings.desktopNotifications;
 }
 
 function detectMobileDevice() {
@@ -654,7 +745,8 @@ function detectNotificationCapabilities(): NotificationCapabilities {
     standaloneNavigator.standalone === true;
   const supportsNotifications = "Notification" in window;
   const supportsServiceWorker = "serviceWorker" in navigator;
-  const supportsPush = supportsNotifications && supportsServiceWorker && "PushManager" in window;
+  const supportsPush =
+    supportsNotifications && supportsServiceWorker && "PushManager" in window;
 
   return {
     supportsNotifications,
@@ -715,7 +807,9 @@ export default function CalendarDashboard() {
   const alertItemsRef = useRef<RescheduleReminder[]>([]);
   const workspaceMutationVersion = useRef(0);
   const workspaceLoadVersion = useRef(0);
-  const [session, setSession] = useState<AppSession | null>(() => readSession());
+  const [session, setSession] = useState<AppSession | null>(() =>
+    readSession(),
+  );
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const isAuthed = Boolean(session);
   const initialData = useMemo(() => readCalendarData(today), [today]);
@@ -728,12 +822,21 @@ export default function CalendarDashboard() {
     useState<SettingsSectionId>("profile");
   const [query, setQuery] = useState("");
   const [tags, setTags] = useState<CategoryStyle[]>(() => initialData.tags);
-  const [calendars, setCalendars] = useState<AppCalendar[]>(() => initialData.calendars);
+  const [calendars, setCalendars] = useState<AppCalendar[]>(
+    () => initialData.calendars,
+  );
   const [activeCategory, setActiveCategory] = useState<string | "all">("all");
   const [events, setEvents] = useState(() => initialData.events);
-  const [savedSettings, setSavedSettings] = useState<AppSettings>(() => initialData.settings);
-  const [settings, setSettings] = useState<AppSettings>(() => initialData.settings);
-  const [calendarDraft, setCalendarDraft] = useState({ name: "", color: "#007aff" });
+  const [savedSettings, setSavedSettings] = useState<AppSettings>(
+    () => initialData.settings,
+  );
+  const [settings, setSettings] = useState<AppSettings>(
+    () => initialData.settings,
+  );
+  const [calendarDraft, setCalendarDraft] = useState({
+    name: "",
+    color: "#007aff",
+  });
   const [memberDraft, setMemberDraft] = useState({
     calendarId: "work",
     email: "",
@@ -741,7 +844,9 @@ export default function CalendarDashboard() {
   });
   const [shareDrafts, setShareDrafts] = useState<Record<string, string>>({});
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [draft, setDraft] = useState<EventDraft>(() => emptyDraft(today, "hobby"));
+  const [draft, setDraft] = useState<EventDraft>(() =>
+    emptyDraft(today, "hobby"),
+  );
   const [eventReminderDraft, setEventReminderDraft] = useState<ReminderDraft>({
     enabled: false,
     preset: "10m",
@@ -762,7 +867,9 @@ export default function CalendarDashboard() {
     reminderTime: currentTimeValue(today),
     eventId: "none",
   });
-  const [eventTaskDrafts, setEventTaskDrafts] = useState<Record<string, string>>({});
+  const [eventTaskDrafts, setEventTaskDrafts] = useState<
+    Record<string, string>
+  >({});
   const [composerOpen, setComposerOpen] = useState(false);
   const [tagModalOpen, setTagModalOpen] = useState(false);
   const [tagDraft, setTagDraft] = useState<TagDraft>({
@@ -773,7 +880,8 @@ export default function CalendarDashboard() {
   const [cancelTarget, setCancelTarget] = useState<CalendarEvent | null>(null);
   const [cancellationReason, setCancellationReason] = useState("");
   const [cancelScope, setCancelScope] = useState<CancelScope>("series-cancel");
-  const [rescheduleTarget, setRescheduleTarget] = useState<CalendarEvent | null>(null);
+  const [rescheduleTarget, setRescheduleTarget] =
+    useState<CalendarEvent | null>(null);
   const [rescheduleDraft, setRescheduleDraft] = useState({
     date: toDateKey(addDays(today, 1)),
     time: "09:00",
@@ -784,12 +892,14 @@ export default function CalendarDashboard() {
   const [settingsError, setSettingsError] = useState("");
   const [composerSubmitting, setComposerSubmitting] = useState(false);
   const [busyActions, setBusyActions] = useState<Set<string>>(() => new Set());
-  const [notificationPermissionState, setNotificationPermissionState] = useState("unsupported");
+  const [notificationPermissionState, setNotificationPermissionState] =
+    useState("unsupported");
   const [pushStatus, setPushStatus] = useState("Checking push support...");
   const [pushSubscribed, setPushSubscribed] = useState(false);
   const [pushConfigured, setPushConfigured] = useState(false);
   const [cronConfigured, setCronConfigured] = useState(false);
-  const [notificationActionMessage, setNotificationActionMessage] = useState("");
+  const [notificationActionMessage, setNotificationActionMessage] =
+    useState("");
   const [isMobileDevice, setIsMobileDevice] = useState(false);
   const [canVibrate, setCanVibrate] = useState(false);
   const [notificationCapabilities, setNotificationCapabilities] =
@@ -801,7 +911,8 @@ export default function CalendarDashboard() {
       isIOS: false,
       isPWAInstalled: false,
     }));
-  const [deleteCalendarTarget, setDeleteCalendarTarget] = useState<AppCalendar | null>(null);
+  const [deleteCalendarTarget, setDeleteCalendarTarget] =
+    useState<AppCalendar | null>(null);
   const [deleteAccountOpen, setDeleteAccountOpen] = useState(false);
   const [deleteAccountText, setDeleteAccountText] = useState("");
 
@@ -812,7 +923,12 @@ export default function CalendarDashboard() {
     [tags],
   );
   const visibleCalendarIds = useMemo(
-    () => new Set(calendars.filter((calendar) => calendar.visible).map((calendar) => calendar.id)),
+    () =>
+      new Set(
+        calendars
+          .filter((calendar) => calendar.visible)
+          .map((calendar) => calendar.id),
+      ),
     [calendars],
   );
   const hasVisibleCalendars = visibleCalendarIds.size > 0;
@@ -836,10 +952,26 @@ export default function CalendarDashboard() {
             .toLowerCase()
             .includes(normalizedQuery);
 
-        return matchesCalendar && matchesCategory && matchesQuery && event.status !== "archived";
+        return (
+          matchesCalendar &&
+          matchesCategory &&
+          matchesQuery &&
+          event.status !== "archived"
+        );
       })
-      .sort((a, b) => Number(b.pinned) - Number(a.pinned) || a.time.localeCompare(b.time));
-  }, [activeCategory, calendars, events, hasVisibleCalendars, query, tagMap, visibleCalendarIds]);
+      .sort(
+        (a, b) =>
+          Number(b.pinned) - Number(a.pinned) || a.time.localeCompare(b.time),
+      );
+  }, [
+    activeCategory,
+    calendars,
+    events,
+    hasVisibleCalendars,
+    query,
+    tagMap,
+    visibleCalendarIds,
+  ]);
 
   const selectedEvents = useMemo(
     () => filteredEvents.filter((event) => event.date === selectedKey),
@@ -880,11 +1012,10 @@ export default function CalendarDashboard() {
   );
   const taskViewKeys = useMemo(() => {
     if (taskView === "day") return new Set([selectedKey]);
-    if (taskView === "week") return new Set(weekDays.map((day) => toDateKey(day)));
+    if (taskView === "week")
+      return new Set(weekDays.map((day) => toDateKey(day)));
     return new Set(
-      monthDays
-        .filter((day) => day.currentMonth)
-        .map((day) => day.key),
+      monthDays.filter((day) => day.currentMonth).map((day) => day.key),
     );
   }, [monthDays, selectedKey, taskView, weekDays]);
   const visibleTaskItems = useMemo(
@@ -911,7 +1042,9 @@ export default function CalendarDashboard() {
     return formatMonthYear(visibleMonth);
   }, [selectedDate, taskView, visibleMonth, weekDays]);
   const alertItems = useMemo(() => {
-    const reminderMinutes = parseReminderMinutes(settings.notifications.defaultTiming);
+    const reminderMinutes = parseReminderMinutes(
+      settings.notifications.defaultTiming,
+    );
     const eventAlerts = settings.notifications.eventReminders
       ? events
           .filter((event) => event.status === "scheduled")
@@ -932,7 +1065,9 @@ export default function CalendarDashboard() {
           })
       : [];
     const rescheduleAlerts = settings.notifications.rescheduleReminders
-      ? events.flatMap((event) => event.rescheduleReminders).concat(eventReminders)
+      ? events
+          .flatMap((event) => event.rescheduleReminders)
+          .concat(eventReminders)
       : [];
     const taskAlerts = settings.notifications.taskReminders
       ? standaloneTasks
@@ -961,10 +1096,22 @@ export default function CalendarDashboard() {
         ]
       : [];
 
-    return [...eventAlerts, ...rescheduleAlerts, ...taskAlerts, ...dailyAgendaAlert].sort((a, b) =>
+    return [
+      ...eventAlerts,
+      ...rescheduleAlerts,
+      ...taskAlerts,
+      ...dailyAgendaAlert,
+    ].sort((a, b) =>
       `${a.date} ${a.time}`.localeCompare(`${b.date} ${b.time}`),
     );
-  }, [eventReminders, events, selectedEvents.length, settings.notifications, standaloneTasks, today]);
+  }, [
+    eventReminders,
+    events,
+    selectedEvents.length,
+    settings.notifications,
+    standaloneTasks,
+    today,
+  ]);
   const selectedAlertItems = useMemo(
     () => alertItems.filter((alert) => alert.date === selectedKey),
     [alertItems, selectedKey],
@@ -1007,7 +1154,11 @@ export default function CalendarDashboard() {
     workspaceMutationVersion.current += 1;
   }
 
-  function logDiagnostic(label: string, eventCount = events.length, theme = settings.theme) {
+  function logDiagnostic(
+    label: string,
+    eventCount = events.length,
+    theme = settings.theme,
+  ) {
     console.log(`[Arcgenda diagnostics] ${label}`, {
       userId: session?.user.id ?? readSession()?.user.id ?? null,
       eventCount,
@@ -1017,7 +1168,9 @@ export default function CalendarDashboard() {
     });
   }
 
-  async function loadWorkspace(options: { message?: string; showLoading?: boolean } = {}) {
+  async function loadWorkspace(
+    options: { message?: string; showLoading?: boolean } = {},
+  ) {
     logDiagnostic("loadWorkspace() call");
     const storedSession = readSession();
     const sessionUserId = storedSession?.user.id;
@@ -1034,16 +1187,35 @@ export default function CalendarDashboard() {
     if (showLoading) setWorkspaceLoading(true);
     setWorkspaceMessage("");
     try {
-      const [userPayload, calendarPayload, categoryPayload, eventPayload, taskPayload, reminderPayload, preferencePayload] =
-        await Promise.all([
-          apiJson<{ user: AppSession["user"] & { theme?: AppSettings["theme"] } }>("/api/users/me"),
-          apiJson<{ calendars: DbCalendar[]; limit: number }>("/api/calendars"),
-          apiJson<{ categories: DbCategory[] }>("/api/categories"),
-          apiJson<{ events: DbEvent[] }>("/api/events"),
-          apiJson<{ tasks: DbTask[] }>("/api/tasks"),
-          apiJson<{ reminders: DbReminder[] }>("/api/reminders"),
-          apiJson<{ preferences: DbNotificationPreferences }>("/api/settings/notifications"),
-        ]);
+      const [
+        userPayload,
+        calendarPayload,
+        categoryPayload,
+        eventPayload,
+        taskPayload,
+        reminderPayload,
+        preferencePayload,
+      ] = await Promise.all([
+        apiJson<{
+          user: AppSession["user"] & { theme?: AppSettings["theme"] };
+        }>("/api/users/me"),
+        apiJson<{ calendars: DbCalendar[]; limit: number }>("/api/calendars"),
+        apiJson<{ categories: DbCategory[] }>("/api/categories"),
+        apiJson<{ events: DbEvent[] }>("/api/events"),
+        apiJson<{ tasks: DbTask[] }>("/api/tasks"),
+        apiJson<{ reminders: DbReminder[] }>("/api/reminders"),
+        apiJson<{ preferences: DbNotificationPreferences }>(
+          "/api/settings/notifications",
+        ),
+      ]
+    );
+    console.log("LOAD WORKSPACE RESULT:", {
+  userTheme: userPayload.user.theme,
+  calendarCount: calendarPayload.calendars.length,
+  eventCount: eventPayload.events.length,
+  eventDates: eventPayload.events.map((event) => event.startDate),
+  eventTitles: eventPayload.events.map((event) => event.title),
+});
       const accessToken =
         (await createClient().auth.getSession()).data.session?.access_token ??
         readSession()?.accessToken;
@@ -1053,14 +1225,17 @@ export default function CalendarDashboard() {
       if (loadedCategories.length === 0) {
         loadedCategories = await Promise.all(
           Object.values(categoryStyles).map(async (category) => {
-            const payload = await apiJson<{ category: DbCategory }>("/api/categories", {
-              method: "POST",
-              body: JSON.stringify({
-                name: category.label,
-                color: category.color,
-                icon: category.icon,
-              }),
-            });
+            const payload = await apiJson<{ category: DbCategory }>(
+              "/api/categories",
+              {
+                method: "POST",
+                body: JSON.stringify({
+                  name: category.label,
+                  color: category.color,
+                  icon: category.icon,
+                }),
+              },
+            );
             return payload.category;
           }),
         );
@@ -1068,10 +1243,13 @@ export default function CalendarDashboard() {
 
       let loadedCalendars = calendarPayload.calendars;
       if (loadedCalendars.length === 0) {
-        const payload = await apiJson<{ calendar: DbCalendar }>("/api/calendars", {
-          method: "POST",
-          body: JSON.stringify({ name: "My Calendar", color: "#007aff" }),
-        });
+        const payload = await apiJson<{ calendar: DbCalendar }>(
+          "/api/calendars",
+          {
+            method: "POST",
+            body: JSON.stringify({ name: "My Calendar", color: "#007aff" }),
+          },
+        );
         loadedCalendars = [payload.calendar];
       }
 
@@ -1082,15 +1260,25 @@ export default function CalendarDashboard() {
       );
       let mappedCalendars = loadedCalendars.map((calendar) => {
         const mapped = mapCalendar(calendar, nextSession);
-        return eventCalendarIds.has(mapped.id) ? { ...mapped, visible: true } : mapped;
+        return eventCalendarIds.has(mapped.id)
+          ? { ...mapped, visible: true }
+          : mapped;
       });
-      if (mappedCalendars.length > 0 && !mappedCalendars.some((calendar) => calendar.visible)) {
-        mappedCalendars = mappedCalendars.map((calendar) => ({ ...calendar, visible: true }));
+      if (
+        mappedCalendars.length > 0 &&
+        !mappedCalendars.some((calendar) => calendar.visible)
+      ) {
+        mappedCalendars = mappedCalendars.map((calendar) => ({
+          ...calendar,
+          visible: true,
+        }));
       }
       const calendarDisplayNames = Object.fromEntries(
         loadedCalendars
           .map((calendar) => {
-            const ownMember = calendar.members.find((member) => member.userId === nextSession.user.id);
+            const ownMember = calendar.members.find(
+              (member) => member.userId === nextSession.user.id,
+            );
             return [calendar.id, ownMember?.displayName ?? ""];
           })
           .filter(([, value]) => value),
@@ -1118,55 +1306,59 @@ export default function CalendarDashboard() {
       setSession(nextSession);
       setCalendars(mappedCalendars);
       setTags(loadedCategories.map(mapCategory));
-      console.log("[Arcgenda diagnostics] before setEvents(loadWorkspace)", {
-        previousEventCount: events.length,
-        nextEventCount: eventPayload.events.length,
-        userId: nextSession.user.id ?? session?.user.id ?? null,
-        workspaceMutationVersion: workspaceMutationVersion.current,
-        workspaceLoadVersion: workspaceLoadVersion.current,
-        theme: settings.theme,
-      });
-      setEvents(eventPayload.events.map(mapEvent));
-      console.log("[Arcgenda diagnostics] after setEvents(loadWorkspace)", {
-        previousEventCount: events.length,
-        nextEventCount: eventPayload.events.length,
-        userId: nextSession.user.id ?? session?.user.id ?? null,
-        workspaceMutationVersion: workspaceMutationVersion.current,
-        workspaceLoadVersion: workspaceLoadVersion.current,
-        theme: settings.theme,
-      });
+      const mappedEvents = eventPayload.events.map(mapEvent);
+
+console.log("MAPPED EVENTS FROM LOAD WORKSPACE:", {
+  rawCount: eventPayload.events.length,
+  mappedCount: mappedEvents.length,
+  rawDates: eventPayload.events.map((event) => event.startDate),
+  mappedDates: mappedEvents.map((event) => event.date),
+  titles: mappedEvents.map((event) => event.title),
+});
+
+setEvents(mappedEvents);
+
+const todayKey = toDateKey(today);
+const todayHasEvents = mappedEvents.some(
+  (event) => event.date === todayKey && event.status !== "archived",
+);
+
+if (todayHasEvents) {
+  setSelectedDate(today);
+  setVisibleMonth(startOfMonth(today));
+} else {
+  const firstUpcomingEvent = mappedEvents
+    .filter((event) => event.status !== "archived")
+    .sort((a, b) => a.date.localeCompare(b.date))[0];
+
+  if (firstUpcomingEvent) {
+    const eventDate = fromDateKey(firstUpcomingEvent.date);
+    setSelectedDate(eventDate);
+    setVisibleMonth(startOfMonth(eventDate));
+  }
+}
       setActiveCategory("all");
-      setEventReminders(reminderPayload.reminders.filter((reminder) => !reminder.eventId).map(mapReminder));
+      setEventReminders(
+        reminderPayload.reminders
+          .filter((reminder) => !reminder.eventId)
+          .map(mapReminder),
+      );
       setStandaloneTasks(
         taskPayload.tasks
           .filter((task) => !task.eventId)
           .map((task) => mapStandaloneTask(task, today)),
       );
       setSavedSettings(mappedSettings);
-      console.log("[Arcgenda diagnostics] before setSettings(loadWorkspace)", {
-        userId: nextSession.user.id ?? session?.user.id ?? null,
-        eventCount: eventPayload.events.length,
-        workspaceMutationVersion: workspaceMutationVersion.current,
-        workspaceLoadVersion: workspaceLoadVersion.current,
-        previousTheme: settings.theme,
-        nextTheme: mappedSettings.theme,
-      });
       setSettings(mappedSettings);
-      console.log("[Arcgenda diagnostics] after setSettings(loadWorkspace)", {
-        userId: nextSession.user.id ?? session?.user.id ?? null,
-        eventCount: eventPayload.events.length,
-        workspaceMutationVersion: workspaceMutationVersion.current,
-        workspaceLoadVersion: workspaceLoadVersion.current,
-        previousTheme: settings.theme,
-        nextTheme: mappedSettings.theme,
-      });
       setSettingsLoaded(true);
-      applyDocumentTheme(loadedTheme);
+      applyDocumentTheme(mappedSettings.theme, true);
       setMemberDraft((current) => ({
         ...current,
         calendarId: mappedCalendars[0]?.id ?? current.calendarId,
       }));
-      setWorkspaceMessage(options.message ?? "Workspace loaded from your account.");
+      setWorkspaceMessage(
+        options.message ?? "Workspace loaded from your account.",
+      );
     } catch (error) {
       if (
         loadVersionAtStart !== workspaceLoadVersion.current ||
@@ -1177,54 +1369,66 @@ export default function CalendarDashboard() {
       clearSession();
       setSession(null);
       setSettingsLoaded(false);
-      setWorkspaceMessage(error instanceof Error ? error.message : "Could not load workspace.");
+      setWorkspaceMessage(
+        error instanceof Error ? error.message : "Could not load workspace.",
+      );
     } finally {
       if (showLoading) setWorkspaceLoading(false);
     }
   }
 
   async function refreshSchedule(message?: string) {
-    logDiagnostic("refreshSchedule() call");
     if (!session) return;
-    const loadVersionAtStart = workspaceLoadVersion.current;
-    const mutationVersionAtStart = workspaceMutationVersion.current;
-    const [eventPayload, taskPayload, reminderPayload] = await Promise.all([
-      apiJson<{ events: DbEvent[] }>("/api/events"),
-      apiJson<{ tasks: DbTask[] }>("/api/tasks"),
-      apiJson<{ reminders: DbReminder[] }>("/api/reminders"),
-    ]);
 
-    if (
-      loadVersionAtStart !== workspaceLoadVersion.current ||
-      mutationVersionAtStart !== workspaceMutationVersion.current
-    ) {
-      return;
+    try {
+      const [eventPayload, taskPayload, reminderPayload] = await Promise.all([
+        apiJson<{ events: DbEvent[] }>("/api/events"),
+        apiJson<{ tasks: DbTask[] }>("/api/tasks"),
+        apiJson<{ reminders: DbReminder[] }>("/api/reminders"),
+      ]);
+
+      const mappedEvents = eventPayload.events.map(mapEvent);
+
+      setEvents(mappedEvents);
+
+      const todayKey = toDateKey(today);
+      const todayHasEvents = mappedEvents.some(
+        (event) => event.date === todayKey && event.status !== "archived",
+      );
+
+      if (todayHasEvents) {
+        setSelectedDate(today);
+        setVisibleMonth(startOfMonth(today));
+      } else {
+        const firstUpcomingEvent = mappedEvents
+          .filter((event) => event.status !== "archived")
+          .sort((a, b) => a.date.localeCompare(b.date))[0];
+
+        if (firstUpcomingEvent) {
+          const eventDate = fromDateKey(firstUpcomingEvent.date);
+          setSelectedDate(eventDate);
+          setVisibleMonth(startOfMonth(eventDate));
+        }
+      }
+
+      setStandaloneTasks(
+        taskPayload.tasks
+          .filter((task) => !task.eventId)
+          .map((task) => mapStandaloneTask(task, today)),
+      );
+
+      setEventReminders(
+        reminderPayload.reminders
+          .filter((reminder) => !reminder.eventId)
+          .map(mapReminder),
+      );
+
+      if (message) setWorkspaceMessage(message);
+    } catch (error) {
+      setWorkspaceMessage(
+        error instanceof Error ? error.message : "Could not refresh schedule.",
+      );
     }
-
-    console.log("[Arcgenda diagnostics] before setEvents(refreshSchedule)", {
-      previousEventCount: events.length,
-      nextEventCount: eventPayload.events.length,
-      userId: session.user.id ?? null,
-      workspaceMutationVersion: workspaceMutationVersion.current,
-      workspaceLoadVersion: workspaceLoadVersion.current,
-      theme: settings.theme,
-    });
-    setEvents(eventPayload.events.map(mapEvent));
-    console.log("[Arcgenda diagnostics] after setEvents(refreshSchedule)", {
-      previousEventCount: events.length,
-      nextEventCount: eventPayload.events.length,
-      userId: session.user.id ?? null,
-      workspaceMutationVersion: workspaceMutationVersion.current,
-      workspaceLoadVersion: workspaceLoadVersion.current,
-      theme: settings.theme,
-    });
-    setStandaloneTasks(
-      taskPayload.tasks
-        .filter((task) => !task.eventId)
-        .map((task) => mapStandaloneTask(task, today)),
-    );
-    setEventReminders(reminderPayload.reminders.filter((reminder) => !reminder.eventId).map(mapReminder));
-    if (message) setWorkspaceMessage(message);
   }
 
   async function refreshPushStatus() {
@@ -1234,7 +1438,9 @@ export default function CalendarDashboard() {
     setIsMobileDevice(detectMobileDevice());
     setCanVibrate(capabilities.supportsVibration);
     setNotificationPermissionState(
-      capabilities.supportsNotifications ? Notification.permission : "unsupported",
+      capabilities.supportsNotifications
+        ? Notification.permission
+        : "unsupported",
     );
 
     if (!capabilities.supportsPush) {
@@ -1260,14 +1466,20 @@ export default function CalendarDashboard() {
       setCronConfigured(payload.cronConfigured);
       if (!payload.configured || !payload.publicKey) {
         setPushSubscribed(false);
-        setPushStatus("Closed-app push notifications are not configured yet. Add VAPID keys.");
+        setPushStatus(
+          "Closed-app push notifications are not configured yet. Add VAPID keys.",
+        );
         return;
       }
       const registration = await registerServiceWorker();
-      const browserSubscription = await registration?.pushManager.getSubscription();
+      const browserSubscription =
+        await registration?.pushManager.getSubscription();
       const subscribed = Boolean(
         browserSubscription &&
-          payload.subscriptions.some((subscription) => subscription.endpoint === browserSubscription.endpoint),
+        payload.subscriptions.some(
+          (subscription) =>
+            subscription.endpoint === browserSubscription.endpoint,
+        ),
       );
       setPushSubscribed(subscribed);
       setPushStatus(
@@ -1278,24 +1490,34 @@ export default function CalendarDashboard() {
           : "This device is not subscribed for Web Push yet.",
       );
     } catch (error) {
-      setPushStatus(error instanceof Error ? error.message : "Could not check push status.");
+      setPushStatus(
+        error instanceof Error ? error.message : "Could not check push status.",
+      );
     }
   }
 
   async function subscribeToPushNotifications() {
     setNotificationActionMessage("");
     try {
-      if (!("Notification" in window)) throw new Error("This browser does not support notifications.");
+      if (!("Notification" in window))
+        throw new Error("This browser does not support notifications.");
       if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
-        throw new Error("This browser does not support Web Push subscriptions.");
+        throw new Error(
+          "This browser does not support Web Push subscriptions.",
+        );
       }
       const permission = await requestNotificationPermission();
       setNotificationPermissionState(permission);
-      if (permission !== "granted") throw new Error("Notification permission was not granted.");
+      if (permission !== "granted")
+        throw new Error("Notification permission was not granted.");
 
-      const status = await apiJson<{ publicKey: string; configured: boolean }>("/api/notifications/subscribe");
+      const status = await apiJson<{ publicKey: string; configured: boolean }>(
+        "/api/notifications/subscribe",
+      );
       if (!status.configured || !status.publicKey) {
-        throw new Error("Web Push is not configured. Add VAPID keys to the environment first.");
+        throw new Error(
+          "Web Push is not configured. Add VAPID keys to the environment first.",
+        );
       }
 
       const registration = await registerServiceWorker();
@@ -1319,9 +1541,14 @@ export default function CalendarDashboard() {
           ? "This device is subscribed for Web Push."
           : "This device is subscribed, but background reminder delivery is not fully configured yet.",
       );
-      setNotificationActionMessage("Notifications are enabled for this device.");
+      setNotificationActionMessage(
+        "Notifications are enabled for this device.",
+      );
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Could not enable notifications.";
+      const message =
+        error instanceof Error
+          ? error.message
+          : "Could not enable notifications.";
       setPushStatus(message);
       setNotificationActionMessage(message);
     }
@@ -1330,7 +1557,10 @@ export default function CalendarDashboard() {
   async function unsubscribeFromPushNotifications() {
     setNotificationActionMessage("");
     try {
-      const registration = "serviceWorker" in navigator ? await navigator.serviceWorker.ready : null;
+      const registration =
+        "serviceWorker" in navigator
+          ? await navigator.serviceWorker.ready
+          : null;
       const subscription = await registration?.pushManager.getSubscription();
       await apiJson("/api/notifications/unsubscribe", {
         method: "DELETE",
@@ -1341,7 +1571,11 @@ export default function CalendarDashboard() {
       setPushStatus("This device is unsubscribed from Web Push.");
       setNotificationActionMessage("Notifications disabled for this device.");
     } catch (error) {
-      setNotificationActionMessage(error instanceof Error ? error.message : "Could not disable notifications.");
+      setNotificationActionMessage(
+        error instanceof Error
+          ? error.message
+          : "Could not disable notifications.",
+      );
     }
   }
 
@@ -1349,21 +1583,27 @@ export default function CalendarDashboard() {
     setNotificationActionMessage("");
     try {
       if (!pushSubscribed) await subscribeToPushNotifications();
-      const payload = await apiJson<{ message: string; sent: number; skippedForQuietHours?: boolean }>(
-        "/api/notifications/test",
-        { method: "POST" },
-      );
+      const payload = await apiJson<{
+        message: string;
+        sent: number;
+        skippedForQuietHours?: boolean;
+      }>("/api/notifications/test", { method: "POST" });
       setNotificationActionMessage(payload.message);
       if (payload.sent > 0) await refreshPushStatus();
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Could not send test notification.";
+      const message =
+        error instanceof Error
+          ? error.message
+          : "Could not send test notification.";
       setNotificationActionMessage(message);
       if ("Notification" in window && Notification.permission === "granted") {
         new Notification("Arcgenda test notification", {
           body: "This is only a foreground test notification.",
           icon: "/icons/arcgenda-icon-192.png",
         });
-        setNotificationActionMessage(`${message} Foreground test notification was shown.`);
+        setNotificationActionMessage(
+          `${message} Foreground test notification was shown.`,
+        );
       }
     }
   }
@@ -1382,14 +1622,16 @@ export default function CalendarDashboard() {
 
   useEffect(() => {
     const applyTheme = () => {
-      if (!settingsLoaded) return;
       applyDocumentTheme(settings.theme);
     };
+
     applyTheme();
+
     const media = window.matchMedia?.("(prefers-color-scheme: dark)");
     media?.addEventListener("change", applyTheme);
+
     return () => media?.removeEventListener("change", applyTheme);
-  }, [settings.theme, settingsLoaded]);
+  }, [settings.theme]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -1405,17 +1647,10 @@ export default function CalendarDashboard() {
 
   function revertUnsavedSettings() {
     setSettings(savedSettings);
+    applyDocumentTheme(savedSettings.theme);
     setSettingsMessage("");
     setSettingsError("");
   }
-
-  useEffect(() => {
-    if (activeTab !== "settings") {
-      const timer = window.setTimeout(revertUnsavedSettings, 0);
-      return () => window.clearTimeout(timer);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTab]);
 
   useEffect(() => {
     const onVisibilityChange = () => {
@@ -1424,7 +1659,8 @@ export default function CalendarDashboard() {
       }
     };
     document.addEventListener("visibilitychange", onVisibilityChange);
-    return () => document.removeEventListener("visibilitychange", onVisibilityChange);
+    return () =>
+      document.removeEventListener("visibilitychange", onVisibilityChange);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab, savedSettings]);
 
@@ -1444,7 +1680,10 @@ export default function CalendarDashboard() {
         }
 
         firedAlerts.current.add(item.id);
-        if (isReminderTooOld(item, now) || isQuietTime(settings.notifications, now)) {
+        if (
+          isReminderTooOld(item, now) ||
+          isQuietTime(settings.notifications, now)
+        ) {
           return;
         }
 
@@ -1453,8 +1692,15 @@ export default function CalendarDashboard() {
           "Notification" in window &&
           Notification.permission === "granted"
         ) {
-          void showArcgendaNotification(item.title, settings.notifications.vibration);
-          if (!item.id.startsWith("event-alert-") && !item.id.startsWith("task-alert-") && !item.id.startsWith("daily-agenda-")) {
+          void showArcgendaNotification(
+            item.title,
+            settings.notifications.vibration,
+          );
+          if (
+            !item.id.startsWith("event-alert-") &&
+            !item.id.startsWith("task-alert-") &&
+            !item.id.startsWith("daily-agenda-")
+          ) {
             void apiJson(`/api/reminders/${item.id}`, {
               method: "PATCH",
               body: JSON.stringify({ notificationSent: true }),
@@ -1462,7 +1708,10 @@ export default function CalendarDashboard() {
             setEventReminders((current) =>
               current.map((reminder) =>
                 reminder.id === item.id
-                  ? { ...reminder, notificationSentAt: new Date().toISOString() }
+                  ? {
+                      ...reminder,
+                      notificationSentAt: new Date().toISOString(),
+                    }
                   : reminder,
               ),
             );
@@ -1478,8 +1727,15 @@ export default function CalendarDashboard() {
           void requestNotificationPermission().then((permission) => {
             setNotificationPermissionState(permission);
             if (permission === "granted") {
-              void showArcgendaNotification(item.title, settings.notifications.vibration);
-              if (!item.id.startsWith("event-alert-") && !item.id.startsWith("task-alert-") && !item.id.startsWith("daily-agenda-")) {
+              void showArcgendaNotification(
+                item.title,
+                settings.notifications.vibration,
+              );
+              if (
+                !item.id.startsWith("event-alert-") &&
+                !item.id.startsWith("task-alert-") &&
+                !item.id.startsWith("daily-agenda-")
+              ) {
                 void apiJson(`/api/reminders/${item.id}`, {
                   method: "PATCH",
                   body: JSON.stringify({ notificationSent: true }),
@@ -1487,7 +1743,10 @@ export default function CalendarDashboard() {
                 setEventReminders((current) =>
                   current.map((reminder) =>
                     reminder.id === item.id
-                      ? { ...reminder, notificationSentAt: new Date().toISOString() }
+                      ? {
+                          ...reminder,
+                          notificationSentAt: new Date().toISOString(),
+                        }
                       : reminder,
                   ),
                 );
@@ -1510,12 +1769,19 @@ export default function CalendarDashboard() {
   function movePeriod(direction: -1 | 1) {
     if (view === "month") {
       setVisibleMonth(
-        new Date(visibleMonth.getFullYear(), visibleMonth.getMonth() + direction, 1),
+        new Date(
+          visibleMonth.getFullYear(),
+          visibleMonth.getMonth() + direction,
+          1,
+        ),
       );
       return;
     }
 
-    const nextDate = addDays(selectedDate, view === "week" ? direction * 7 : direction);
+    const nextDate = addDays(
+      selectedDate,
+      view === "week" ? direction * 7 : direction,
+    );
     setSelectedDate(nextDate);
     setVisibleMonth(startOfMonth(nextDate));
   }
@@ -1533,7 +1799,10 @@ export default function CalendarDashboard() {
     setComposerKind("event");
     setDraft({
       ...emptyDraft(selectedDate, tags[0]?.id ?? "hobby"),
-      calendarId: calendars.find((calendar) => calendar.visible)?.id ?? calendars[0]?.id ?? "",
+      calendarId:
+        calendars.find((calendar) => calendar.visible)?.id ??
+        calendars[0]?.id ??
+        "",
       time: currentTimeValue(now),
     });
     setEventReminderDraft({
@@ -1560,7 +1829,12 @@ export default function CalendarDashboard() {
   }
 
   function openEditEvent(event: CalendarEvent) {
-    if (event.status === "cancelled" || composerSubmitting || isBusy(`event:${event.id}`)) return;
+    if (
+      event.status === "cancelled" ||
+      composerSubmitting ||
+      isBusy(`event:${event.id}`)
+    )
+      return;
     setEditingId(event.id);
     setComposerKind("event");
     setDraft(eventToDraft(event));
@@ -1591,7 +1865,9 @@ export default function CalendarDashboard() {
       });
       await refreshSchedule("Task created.");
     } catch (error) {
-      setWorkspaceMessage(error instanceof Error ? error.message : "Could not create task.");
+      setWorkspaceMessage(
+        error instanceof Error ? error.message : "Could not create task.",
+      );
       return;
     } finally {
       setComposerSubmitting(false);
@@ -1615,14 +1891,20 @@ export default function CalendarDashboard() {
     if (!title) return;
 
     const previous = events.find((item) => item.id === editingId);
-    const nextCalendar = calendars.find((calendar) => calendar.id === draft.calendarId);
-    const previousCalendar = calendars.find((calendar) => calendar.id === previous?.calendarId);
+    const nextCalendar = calendars.find(
+      (calendar) => calendar.id === draft.calendarId,
+    );
+    const previousCalendar = calendars.find(
+      (calendar) => calendar.id === previous?.calendarId,
+    );
     if (
       previous &&
       nextCalendar &&
       previousCalendar &&
       previousCalendar.shared !== nextCalendar.shared &&
-      !window.confirm(`Move "${previous.title}" from ${previousCalendar.name} to ${nextCalendar.name}? Linked tasks and reminders will stay attached.`)
+      !window.confirm(
+        `Move "${previous.title}" from ${previousCalendar.name} to ${nextCalendar.name}? Linked tasks and reminders will stay attached.`,
+      )
     ) {
       return;
     }
@@ -1630,16 +1912,28 @@ export default function CalendarDashboard() {
     const startDate = dateTimeFromDraft(draft.date, draft.time, draft.allDay);
     let reminderDateTime: { date: string; time: string } | null = null;
     try {
-      reminderDateTime = resolveReminderDateTime(eventReminderDraft, startDate, draft.recurrence);
+      reminderDateTime = resolveReminderDateTime(
+        eventReminderDraft,
+        startDate,
+        draft.recurrence,
+      );
     } catch (error) {
-      setWorkspaceMessage(error instanceof Error ? error.message : "Choose a valid reminder.");
+      setWorkspaceMessage(
+        error instanceof Error ? error.message : "Choose a valid reminder.",
+      );
       return;
     }
-    if (reminderDateTime && !isFutureDateTime(reminderDateTime.date, reminderDateTime.time)) {
+    if (
+      reminderDateTime &&
+      !isFutureDateTime(reminderDateTime.date, reminderDateTime.time)
+    ) {
       setWorkspaceMessage("Choose a future reminder time for this event.");
       return;
     }
-    const endDate = new Date(new Date(startDate).getTime() + minutesFromDuration(draft.duration) * 60000).toISOString();
+    const endDate = new Date(
+      new Date(startDate).getTime() +
+        minutesFromDuration(draft.duration) * 60000,
+    ).toISOString();
     const payload = {
       calendarId: draft.calendarId || undefined,
       categoryId: draft.category,
@@ -1679,41 +1973,55 @@ export default function CalendarDashboard() {
     setComposerSubmitting(true);
     markWorkspaceMutation();
     if (editingId) {
-      console.log("[Arcgenda diagnostics] before setEvents(saveEvent optimistic edit)", {
-        previousEventCount: events.length,
-        nextEventCount: events.length,
-        userId: session?.user.id ?? readSession()?.user.id ?? null,
-        workspaceMutationVersion: workspaceMutationVersion.current,
-        workspaceLoadVersion: workspaceLoadVersion.current,
-        theme: settings.theme,
-      });
-      setEvents((current) => current.map((item) => (item.id === editingId ? optimisticEvent : item)));
-      console.log("[Arcgenda diagnostics] after setEvents(saveEvent optimistic edit)", {
-        previousEventCount: events.length,
-        nextEventCount: events.length,
-        userId: session?.user.id ?? readSession()?.user.id ?? null,
-        workspaceMutationVersion: workspaceMutationVersion.current,
-        workspaceLoadVersion: workspaceLoadVersion.current,
-        theme: settings.theme,
-      });
+      console.log(
+        "[Arcgenda diagnostics] before setEvents(saveEvent optimistic edit)",
+        {
+          previousEventCount: events.length,
+          nextEventCount: events.length,
+          userId: session?.user.id ?? readSession()?.user.id ?? null,
+          workspaceMutationVersion: workspaceMutationVersion.current,
+          workspaceLoadVersion: workspaceLoadVersion.current,
+          theme: settings.theme,
+        },
+      );
+      setEvents((current) =>
+        current.map((item) => (item.id === editingId ? optimisticEvent : item)),
+      );
+      console.log(
+        "[Arcgenda diagnostics] after setEvents(saveEvent optimistic edit)",
+        {
+          previousEventCount: events.length,
+          nextEventCount: events.length,
+          userId: session?.user.id ?? readSession()?.user.id ?? null,
+          workspaceMutationVersion: workspaceMutationVersion.current,
+          workspaceLoadVersion: workspaceLoadVersion.current,
+          theme: settings.theme,
+        },
+      );
     } else {
-      console.log("[Arcgenda diagnostics] before setEvents(saveEvent optimistic create)", {
-        previousEventCount: events.length,
-        nextEventCount: events.length + 1,
-        userId: session?.user.id ?? readSession()?.user.id ?? null,
-        workspaceMutationVersion: workspaceMutationVersion.current,
-        workspaceLoadVersion: workspaceLoadVersion.current,
-        theme: settings.theme,
-      });
+      console.log(
+        "[Arcgenda diagnostics] before setEvents(saveEvent optimistic create)",
+        {
+          previousEventCount: events.length,
+          nextEventCount: events.length + 1,
+          userId: session?.user.id ?? readSession()?.user.id ?? null,
+          workspaceMutationVersion: workspaceMutationVersion.current,
+          workspaceLoadVersion: workspaceLoadVersion.current,
+          theme: settings.theme,
+        },
+      );
       setEvents((current) => [optimisticEvent, ...current]);
-      console.log("[Arcgenda diagnostics] after setEvents(saveEvent optimistic create)", {
-        previousEventCount: events.length,
-        nextEventCount: events.length + 1,
-        userId: session?.user.id ?? readSession()?.user.id ?? null,
-        workspaceMutationVersion: workspaceMutationVersion.current,
-        workspaceLoadVersion: workspaceLoadVersion.current,
-        theme: settings.theme,
-      });
+      console.log(
+        "[Arcgenda diagnostics] after setEvents(saveEvent optimistic create)",
+        {
+          previousEventCount: events.length,
+          nextEventCount: events.length + 1,
+          userId: session?.user.id ?? readSession()?.user.id ?? null,
+          workspaceMutationVersion: workspaceMutationVersion.current,
+          workspaceLoadVersion: workspaceLoadVersion.current,
+          theme: settings.theme,
+        },
+      );
     }
     setSelectedDate(fromDateKey(draft.date));
     setVisibleMonth(startOfMonth(fromDateKey(draft.date)));
@@ -1757,7 +2065,11 @@ export default function CalendarDashboard() {
       }
       console.log("[Arcgenda diagnostics] before setEvents(saveEvent saved)", {
         previousEventCount: events.length,
-        nextEventCount: editingId ? events.length : events.filter((item) => item.id !== optimisticId && item.id !== savedEvent.id).length + 1,
+        nextEventCount: editingId
+          ? events.length
+          : events.filter(
+              (item) => item.id !== optimisticId && item.id !== savedEvent.id,
+            ).length + 1,
         userId: session?.user.id ?? readSession()?.user.id ?? null,
         workspaceMutationVersion: workspaceMutationVersion.current,
         workspaceLoadVersion: workspaceLoadVersion.current,
@@ -1765,39 +2077,64 @@ export default function CalendarDashboard() {
       });
       setEvents((current) =>
         editingId
-          ? current.map((item) => (item.id === editingId || item.id === optimisticId ? savedEvent : item))
-          : [savedEvent, ...current.filter((item) => item.id !== optimisticId && item.id !== savedEvent.id)],
+          ? current.map((item) =>
+              item.id === editingId || item.id === optimisticId
+                ? savedEvent
+                : item,
+            )
+          : [
+              savedEvent,
+              ...current.filter(
+                (item) => item.id !== optimisticId && item.id !== savedEvent.id,
+              ),
+            ],
       );
       console.log("[Arcgenda diagnostics] after setEvents(saveEvent saved)", {
         previousEventCount: events.length,
-        nextEventCount: editingId ? events.length : events.filter((item) => item.id !== optimisticId && item.id !== savedEvent.id).length + 1,
+        nextEventCount: editingId
+          ? events.length
+          : events.filter(
+              (item) => item.id !== optimisticId && item.id !== savedEvent.id,
+            ).length + 1,
         userId: session?.user.id ?? readSession()?.user.id ?? null,
         workspaceMutationVersion: workspaceMutationVersion.current,
         workspaceLoadVersion: workspaceLoadVersion.current,
         theme: settings.theme,
       });
-      await refreshSchedule(editingId ? "Event saved." : "Event created.");
+      if (selectedTaskIds.length > 0 || reminderDateTime) {
+        await refreshSchedule(editingId ? "Event saved." : "Event created.");
+      } else {
+        setWorkspaceMessage(editingId ? "Event saved." : "Event created.");
+      }
       setSelectedDate(fromDateKey(savedEvent.date));
       setVisibleMonth(startOfMonth(fromDateKey(savedEvent.date)));
     } catch (error) {
-      console.log("[Arcgenda diagnostics] before setEvents(saveEvent rollback)", {
-        previousEventCount: events.length,
-        nextEventCount: previousEvents.length,
-        userId: session?.user.id ?? readSession()?.user.id ?? null,
-        workspaceMutationVersion: workspaceMutationVersion.current,
-        workspaceLoadVersion: workspaceLoadVersion.current,
-        theme: settings.theme,
-      });
+      console.log(
+        "[Arcgenda diagnostics] before setEvents(saveEvent rollback)",
+        {
+          previousEventCount: events.length,
+          nextEventCount: previousEvents.length,
+          userId: session?.user.id ?? readSession()?.user.id ?? null,
+          workspaceMutationVersion: workspaceMutationVersion.current,
+          workspaceLoadVersion: workspaceLoadVersion.current,
+          theme: settings.theme,
+        },
+      );
       setEvents(previousEvents);
-      console.log("[Arcgenda diagnostics] after setEvents(saveEvent rollback)", {
-        previousEventCount: events.length,
-        nextEventCount: previousEvents.length,
-        userId: session?.user.id ?? readSession()?.user.id ?? null,
-        workspaceMutationVersion: workspaceMutationVersion.current,
-        workspaceLoadVersion: workspaceLoadVersion.current,
-        theme: settings.theme,
-      });
-      setWorkspaceMessage(error instanceof Error ? error.message : "Could not save event.");
+      console.log(
+        "[Arcgenda diagnostics] after setEvents(saveEvent rollback)",
+        {
+          previousEventCount: events.length,
+          nextEventCount: previousEvents.length,
+          userId: session?.user.id ?? readSession()?.user.id ?? null,
+          workspaceMutationVersion: workspaceMutationVersion.current,
+          workspaceLoadVersion: workspaceLoadVersion.current,
+          theme: settings.theme,
+        },
+      );
+      setWorkspaceMessage(
+        error instanceof Error ? error.message : "Could not save event.",
+      );
       return;
     } finally {
       setComposerSubmitting(false);
@@ -1808,14 +2145,20 @@ export default function CalendarDashboard() {
     const action = `event:${id}:delete`;
     if (isBusy(action)) return;
     const previousEvents = events;
-    setEvents((current) => current.map((event) => (event.id === id ? { ...event, status: "archived" } : event)));
+    setEvents((current) =>
+      current.map((event) =>
+        event.id === id ? { ...event, status: "archived" } : event,
+      ),
+    );
     markBusy(action, true);
     try {
       await apiJson(`/api/events/${id}`, { method: "DELETE" });
       setWorkspaceMessage("Event archived.");
     } catch (error) {
       setEvents(previousEvents);
-      setWorkspaceMessage(error instanceof Error ? error.message : "Could not archive event.");
+      setWorkspaceMessage(
+        error instanceof Error ? error.message : "Could not archive event.",
+      );
     } finally {
       markBusy(action, false);
     }
@@ -1842,7 +2185,9 @@ export default function CalendarDashboard() {
       cancelledAt: new Date().toISOString(),
     };
     setEvents((current) =>
-      current.map((event) => (event.id === cancelTarget.id ? optimisticCancelled : event)),
+      current.map((event) =>
+        event.id === cancelTarget.id ? optimisticCancelled : event,
+      ),
     );
     setCancelTarget(null);
     setCancellationReason("");
@@ -1854,22 +2199,30 @@ export default function CalendarDashboard() {
     });
     markBusy(action, true);
     try {
-      const payload = await apiJson<{ event: DbEvent }>(`/api/events/${cancelTarget.id}/cancel`, {
-        method: "PATCH",
-        body: JSON.stringify({
-          cancellationReason,
-          cancellationScope: cancelTarget.recurrence === "none" ? "single" : "series",
-        }),
-      });
+      const payload = await apiJson<{ event: DbEvent }>(
+        `/api/events/${cancelTarget.id}/cancel`,
+        {
+          method: "PATCH",
+          body: JSON.stringify({
+            cancellationReason,
+            cancellationScope:
+              cancelTarget.recurrence === "none" ? "single" : "series",
+          }),
+        },
+      );
       const cancelledEvent = mapEvent(payload.event);
       setEvents((current) =>
-        current.map((event) => (event.id === cancelledEvent.id ? cancelledEvent : event)),
+        current.map((event) =>
+          event.id === cancelledEvent.id ? cancelledEvent : event,
+        ),
       );
       setRescheduleTarget(cancelledEvent);
     } catch (error) {
       setEvents(previousEvents);
       setRescheduleTarget(null);
-      setWorkspaceMessage(error instanceof Error ? error.message : "Could not cancel event.");
+      setWorkspaceMessage(
+        error instanceof Error ? error.message : "Could not cancel event.",
+      );
     } finally {
       markBusy(action, false);
     }
@@ -1882,7 +2235,12 @@ export default function CalendarDashboard() {
     setEvents((current) =>
       current.map((event) =>
         event.id === id
-          ? { ...event, status: "scheduled", cancellationReason: undefined, cancelledAt: undefined }
+          ? {
+              ...event,
+              status: "scheduled",
+              cancellationReason: undefined,
+              cancelledAt: undefined,
+            }
           : event,
       ),
     );
@@ -1894,12 +2252,16 @@ export default function CalendarDashboard() {
       });
       const restoredEvent = mapEvent(payload.event);
       setEvents((current) =>
-        current.map((event) => (event.id === restoredEvent.id ? restoredEvent : event)),
+        current.map((event) =>
+          event.id === restoredEvent.id ? restoredEvent : event,
+        ),
       );
       setWorkspaceMessage("Event restored.");
     } catch (error) {
       setEvents(previousEvents);
-      setWorkspaceMessage(error instanceof Error ? error.message : "Could not restore event.");
+      setWorkspaceMessage(
+        error instanceof Error ? error.message : "Could not restore event.",
+      );
     } finally {
       markBusy(action, false);
     }
@@ -1938,7 +2300,9 @@ export default function CalendarDashboard() {
       setActiveTab("alerts");
       setRescheduleTarget(null);
     } catch (error) {
-      setWorkspaceMessage(error instanceof Error ? error.message : "Could not create reminder.");
+      setWorkspaceMessage(
+        error instanceof Error ? error.message : "Could not create reminder.",
+      );
     } finally {
       markBusy(action, false);
     }
@@ -1954,7 +2318,9 @@ export default function CalendarDashboard() {
     const previousEvents = events;
     const previousTasks = standaloneTasks;
     setStandaloneTasks((current) =>
-      current.map((item) => (item.id === taskId ? { ...item, done: !item.done } : item)),
+      current.map((item) =>
+        item.id === taskId ? { ...item, done: !item.done } : item,
+      ),
     );
     setEvents((current) =>
       current.map((event) => ({
@@ -1974,7 +2340,9 @@ export default function CalendarDashboard() {
     } catch (error) {
       setEvents(previousEvents);
       setStandaloneTasks(previousTasks);
-      setWorkspaceMessage(error instanceof Error ? error.message : "Could not update task.");
+      setWorkspaceMessage(
+        error instanceof Error ? error.message : "Could not update task.",
+      );
     } finally {
       markBusy(action, false);
     }
@@ -1991,7 +2359,10 @@ export default function CalendarDashboard() {
     setEvents((current) =>
       current.map((event) =>
         event.id === eventId
-          ? { ...event, tasks: [...event.tasks, { id: tempId, title, done: false }] }
+          ? {
+              ...event,
+              tasks: [...event.tasks, { id: tempId, title, done: false }],
+            }
           : event,
       ),
     );
@@ -2009,7 +2380,11 @@ export default function CalendarDashboard() {
                 ...event,
                 tasks: [
                   ...event.tasks.filter((task) => task.id !== tempId),
-                  { id: payload.task.id, title: payload.task.title, done: payload.task.completed },
+                  {
+                    id: payload.task.id,
+                    title: payload.task.title,
+                    done: payload.task.completed,
+                  },
                 ],
               }
             : event,
@@ -2017,7 +2392,11 @@ export default function CalendarDashboard() {
       );
     } catch (error) {
       setEvents(previousEvents);
-      setWorkspaceMessage(error instanceof Error ? error.message : "Could not create linked task.");
+      setWorkspaceMessage(
+        error instanceof Error
+          ? error.message
+          : "Could not create linked task.",
+      );
     } finally {
       markBusy(action, false);
     }
@@ -2030,11 +2409,19 @@ export default function CalendarDashboard() {
     if (!task) return;
     const previousEvents = events;
     const previousTasks = standaloneTasks;
-    setStandaloneTasks((current) => current.filter((item) => item.id !== taskId));
+    setStandaloneTasks((current) =>
+      current.filter((item) => item.id !== taskId),
+    );
     setEvents((current) =>
       current.map((event) =>
         event.id === eventId
-          ? { ...event, tasks: [...event.tasks, { id: task.id, title: task.title, done: task.done }] }
+          ? {
+              ...event,
+              tasks: [
+                ...event.tasks,
+                { id: task.id, title: task.title, done: task.done },
+              ],
+            }
           : event,
       ),
     );
@@ -2048,7 +2435,9 @@ export default function CalendarDashboard() {
     } catch (error) {
       setEvents(previousEvents);
       setStandaloneTasks(previousTasks);
-      setWorkspaceMessage(error instanceof Error ? error.message : "Could not link task.");
+      setWorkspaceMessage(
+        error instanceof Error ? error.message : "Could not link task.",
+      );
     } finally {
       markBusy(action, false);
     }
@@ -2057,7 +2446,9 @@ export default function CalendarDashboard() {
   async function unlinkTaskFromEvent(_eventId: string, taskId: string) {
     const action = `task:${taskId}:unlink`;
     if (isBusy(action)) return;
-    const linkedTask = events.flatMap((event) => event.tasks).find((task) => task.id === taskId);
+    const linkedTask = events
+      .flatMap((event) => event.tasks)
+      .find((task) => task.id === taskId);
     const previousEvents = events;
     const previousTasks = standaloneTasks;
     setEvents((current) =>
@@ -2087,7 +2478,9 @@ export default function CalendarDashboard() {
     } catch (error) {
       setEvents(previousEvents);
       setStandaloneTasks(previousTasks);
-      setWorkspaceMessage(error instanceof Error ? error.message : "Could not unlink task.");
+      setWorkspaceMessage(
+        error instanceof Error ? error.message : "Could not unlink task.",
+      );
     } finally {
       markBusy(action, false);
     }
@@ -2098,7 +2491,9 @@ export default function CalendarDashboard() {
     if (isBusy(action)) return;
     const previousEvents = events;
     const previousTasks = standaloneTasks;
-    setStandaloneTasks((current) => current.filter((task) => task.id !== taskId));
+    setStandaloneTasks((current) =>
+      current.filter((task) => task.id !== taskId),
+    );
     setEvents((current) =>
       current.map((event) => ({
         ...event,
@@ -2112,7 +2507,9 @@ export default function CalendarDashboard() {
     } catch (error) {
       setEvents(previousEvents);
       setStandaloneTasks(previousTasks);
-      setWorkspaceMessage(error instanceof Error ? error.message : "Could not delete task.");
+      setWorkspaceMessage(
+        error instanceof Error ? error.message : "Could not delete task.",
+      );
     } finally {
       markBusy(action, false);
     }
@@ -2127,15 +2524,23 @@ export default function CalendarDashboard() {
 
     markBusy(action, true);
     try {
-      const payload = await apiJson<{ calendar: DbCalendar }>("/api/calendars", {
-        method: "POST",
-        body: JSON.stringify({ name, color: calendarDraft.color }),
-      });
-      setCalendars((current) => [...current, mapCalendar(payload.calendar, session)]);
+      const payload = await apiJson<{ calendar: DbCalendar }>(
+        "/api/calendars",
+        {
+          method: "POST",
+          body: JSON.stringify({ name, color: calendarDraft.color }),
+        },
+      );
+      setCalendars((current) => [
+        ...current,
+        mapCalendar(payload.calendar, session),
+      ]);
       setCalendarDraft({ name: "", color: "#007aff" });
       setWorkspaceMessage("Calendar created.");
     } catch (error) {
-      setWorkspaceMessage(error instanceof Error ? error.message : "Could not create calendar.");
+      setWorkspaceMessage(
+        error instanceof Error ? error.message : "Could not create calendar.",
+      );
     } finally {
       markBusy(action, false);
     }
@@ -2144,7 +2549,9 @@ export default function CalendarDashboard() {
   function toggleCalendarVisibility(calendarId: string) {
     setCalendars((current) =>
       current.map((calendar) =>
-        calendar.id === calendarId ? { ...calendar, visible: !calendar.visible } : calendar,
+        calendar.id === calendarId
+          ? { ...calendar, visible: !calendar.visible }
+          : calendar,
       ),
     );
   }
@@ -2155,11 +2562,14 @@ export default function CalendarDashboard() {
     if (isBusy(action)) return;
     const email = memberDraft.email.trim().toLowerCase();
     if (!email) return;
-    const selectedCalendar = calendars.find((calendar) => calendar.id === memberDraft.calendarId);
+    const selectedCalendar = calendars.find(
+      (calendar) => calendar.id === memberDraft.calendarId,
+    );
     const sharedCalendarUsed = calendars.some(
       (calendar) => calendar.shared && calendar.id !== memberDraft.calendarId,
     );
-    if (!selectedCalendar || (!selectedCalendar.shared && sharedCalendarUsed)) return;
+    if (!selectedCalendar || (!selectedCalendar.shared && sharedCalendarUsed))
+      return;
 
     markBusy(action, true);
     try {
@@ -2170,33 +2580,47 @@ export default function CalendarDashboard() {
       void loadWorkspace();
       setMemberDraft((current) => ({ ...current, email: "" }));
     } catch (error) {
-      setWorkspaceMessage(error instanceof Error ? error.message : "Could not add invite.");
+      setWorkspaceMessage(
+        error instanceof Error ? error.message : "Could not add invite.",
+      );
     } finally {
       markBusy(action, false);
     }
   }
 
-  async function updateCalendar(calendarId: string, updates: { name?: string; color?: string }) {
+  async function updateCalendar(
+    calendarId: string,
+    updates: { name?: string; color?: string },
+  ) {
     const action = `calendar:${calendarId}:update`;
     if (isBusy(action)) return;
     const previousCalendars = calendars;
     setCalendars((current) =>
-      current.map((calendar) => (calendar.id === calendarId ? { ...calendar, ...updates } : calendar)),
+      current.map((calendar) =>
+        calendar.id === calendarId ? { ...calendar, ...updates } : calendar,
+      ),
     );
     markBusy(action, true);
     try {
-      const payload = await apiJson<{ calendar: DbCalendar }>(`/api/calendars/${calendarId}`, {
-        method: "PATCH",
-        body: JSON.stringify(updates),
-      });
+      const payload = await apiJson<{ calendar: DbCalendar }>(
+        `/api/calendars/${calendarId}`,
+        {
+          method: "PATCH",
+          body: JSON.stringify(updates),
+        },
+      );
       const updatedCalendar = mapCalendar(payload.calendar, session);
       setCalendars((current) =>
-        current.map((calendar) => (calendar.id === calendarId ? updatedCalendar : calendar)),
+        current.map((calendar) =>
+          calendar.id === calendarId ? updatedCalendar : calendar,
+        ),
       );
       setWorkspaceMessage("Calendar saved.");
     } catch (error) {
       setCalendars(previousCalendars);
-      setWorkspaceMessage(error instanceof Error ? error.message : "Could not update calendar.");
+      setWorkspaceMessage(
+        error instanceof Error ? error.message : "Could not update calendar.",
+      );
     } finally {
       markBusy(action, false);
     }
@@ -2210,10 +2634,14 @@ export default function CalendarDashboard() {
     const previousCalendars = calendars;
     const previousEvents = events;
     setDeleteCalendarTarget(null);
-    setCalendars((current) => current.filter((calendar) => calendar.id !== target.id));
+    setCalendars((current) =>
+      current.filter((calendar) => calendar.id !== target.id),
+    );
     setEvents((current) =>
       current.map((event) =>
-        event.calendarId === target.id ? { ...event, status: "archived" } : event,
+        event.calendarId === target.id
+          ? { ...event, status: "archived" }
+          : event,
       ),
     );
     markBusy(action, true);
@@ -2223,17 +2651,25 @@ export default function CalendarDashboard() {
     } catch (error) {
       setCalendars(previousCalendars);
       setEvents(previousEvents);
-      setWorkspaceMessage(error instanceof Error ? error.message : "Could not delete calendar.");
+      setWorkspaceMessage(
+        error instanceof Error ? error.message : "Could not delete calendar.",
+      );
     } finally {
       markBusy(action, false);
     }
   }
 
-  async function updateCalendarMember(calendarId: string, memberId: string, role: "owner" | "editor" | "viewer") {
+  async function updateCalendarMember(
+    calendarId: string,
+    memberId: string,
+    role: "owner" | "editor" | "viewer",
+  ) {
     try {
       if (
         role === "owner" &&
-        !window.confirm("Transfer ownership to this member? You will no longer be the owner.")
+        !window.confirm(
+          "Transfer ownership to this member? You will no longer be the owner.",
+        )
       ) {
         return;
       }
@@ -2242,33 +2678,56 @@ export default function CalendarDashboard() {
         body: JSON.stringify({ role }),
       });
       await loadWorkspace();
-      setWorkspaceMessage(role === "owner" ? "Ownership transferred." : "Member permissions updated.");
+      setWorkspaceMessage(
+        role === "owner"
+          ? "Ownership transferred."
+          : "Member permissions updated.",
+      );
     } catch (error) {
-      setWorkspaceMessage(error instanceof Error ? error.message : "Could not update member.");
+      setWorkspaceMessage(
+        error instanceof Error ? error.message : "Could not update member.",
+      );
     }
   }
 
   async function removeCalendarMember(calendarId: string, memberId: string) {
     try {
       if (!window.confirm("Remove this person from the calendar?")) return;
-      await apiJson(`/api/calendars/${calendarId}/members/${memberId}`, { method: "DELETE" });
+      await apiJson(`/api/calendars/${calendarId}/members/${memberId}`, {
+        method: "DELETE",
+      });
       await loadWorkspace();
       setWorkspaceMessage("Member removed.");
     } catch (error) {
-      setWorkspaceMessage(error instanceof Error ? error.message : "Could not remove member.");
+      setWorkspaceMessage(
+        error instanceof Error ? error.message : "Could not remove member.",
+      );
     }
   }
 
   async function leaveSharedCalendar(calendar: AppCalendar) {
-    const ownMember = calendar.members.find((member) => member.userId === session?.user.id);
+    const ownMember = calendar.members.find(
+      (member) => member.userId === session?.user.id,
+    );
     if (!ownMember) return;
     try {
-      if (!window.confirm(`Leave "${calendar.name}"? It will no longer count toward your free calendar limit.`)) return;
-      await apiJson(`/api/calendars/${calendar.id}/members/${ownMember.id}`, { method: "DELETE" });
+      if (
+        !window.confirm(
+          `Leave "${calendar.name}"? It will no longer count toward your free calendar limit.`,
+        )
+      )
+        return;
+      await apiJson(`/api/calendars/${calendar.id}/members/${ownMember.id}`, {
+        method: "DELETE",
+      });
       await loadWorkspace();
       setWorkspaceMessage("You left the shared calendar.");
     } catch (error) {
-      setWorkspaceMessage(error instanceof Error ? error.message : "Could not leave shared calendar.");
+      setWorkspaceMessage(
+        error instanceof Error
+          ? error.message
+          : "Could not leave shared calendar.",
+      );
     }
   }
 
@@ -2277,7 +2736,9 @@ export default function CalendarDashboard() {
     setSettingsError("");
     try {
       const [profilePayload, notificationPayload] = await Promise.all([
-        apiJson<{ user: AppSession["user"] & { theme?: AppSettings["theme"] } }>("/api/users/me", {
+        apiJson<{
+          user: AppSession["user"] & { theme?: AppSettings["theme"] };
+        }>("/api/users/me", {
           method: "PATCH",
           body: JSON.stringify({
             name: settings.profile.accountName,
@@ -2285,29 +2746,34 @@ export default function CalendarDashboard() {
             calendarDisplayNames: settings.profile.calendarDisplayNames,
           }),
         }),
-        apiJson<{ preferences: DbNotificationPreferences }>("/api/settings/notifications", {
-          method: "PATCH",
-          body: JSON.stringify({
-            eventReminders: settings.notifications.eventReminders,
-            taskReminders: settings.notifications.taskReminders,
-            dailyAgenda: settings.notifications.dailyAgenda,
-            rescheduleReminders: settings.notifications.rescheduleReminders,
-            birthdayReminders: settings.notifications.birthdayReminders,
-            desktopNotifications: settings.notifications.desktopNotifications,
-            mobileNotifications: settings.notifications.mobileNotifications,
-            quietHoursEnabled: settings.notifications.quietHours,
-            quietHoursStart: settings.notifications.quietStart,
-            quietHoursEnd: settings.notifications.quietEnd,
-            soundEnabled: settings.notifications.sound,
-            vibrationEnabled: settings.notifications.vibration,
-            defaultReminderMinutes: parseReminderMinutes(settings.notifications.defaultTiming),
-            aiEnabled: settings.ai.enabled,
-            aiScheduling: settings.ai.scheduling,
-            aiInsights: settings.ai.insights,
-            aiWeeklySummary: settings.ai.weeklySummary,
-            privateMode: settings.ai.privateMode,
-          }),
-        }),
+        apiJson<{ preferences: DbNotificationPreferences }>(
+          "/api/settings/notifications",
+          {
+            method: "PATCH",
+            body: JSON.stringify({
+              eventReminders: settings.notifications.eventReminders,
+              taskReminders: settings.notifications.taskReminders,
+              dailyAgenda: settings.notifications.dailyAgenda,
+              rescheduleReminders: settings.notifications.rescheduleReminders,
+              birthdayReminders: settings.notifications.birthdayReminders,
+              desktopNotifications: settings.notifications.desktopNotifications,
+              mobileNotifications: settings.notifications.mobileNotifications,
+              quietHoursEnabled: settings.notifications.quietHours,
+              quietHoursStart: settings.notifications.quietStart,
+              quietHoursEnd: settings.notifications.quietEnd,
+              soundEnabled: settings.notifications.sound,
+              vibrationEnabled: settings.notifications.vibration,
+              defaultReminderMinutes: parseReminderMinutes(
+                settings.notifications.defaultTiming,
+              ),
+              aiEnabled: settings.ai.enabled,
+              aiScheduling: settings.ai.scheduling,
+              aiInsights: settings.ai.insights,
+              aiWeeklySummary: settings.ai.weeklySummary,
+              privateMode: settings.ai.privateMode,
+            }),
+          },
+        ),
       ]);
 
       const preferences = notificationPayload.preferences;
@@ -2331,16 +2797,22 @@ export default function CalendarDashboard() {
             member.userId === session?.user.id
               ? {
                   ...member,
-                  displayName: nextSettings.profile.calendarDisplayNames[calendar.id] || undefined,
+                  displayName:
+                    nextSettings.profile.calendarDisplayNames[calendar.id] ||
+                    undefined,
                 }
               : member,
           ),
         })),
       );
       applyDocumentTheme(nextSettings.theme);
-      setSettingsMessage("Profile saved. Theme saved. Notifications saved. AI settings saved.");
+      setSettingsMessage(
+        "Profile saved. Theme saved. Notifications saved. AI settings saved.",
+      );
     } catch (error) {
-      setSettingsError(error instanceof Error ? error.message : "Could not save settings.");
+      setSettingsError(
+        error instanceof Error ? error.message : "Could not save settings.",
+      );
     }
   }
 
@@ -2349,7 +2821,11 @@ export default function CalendarDashboard() {
     try {
       await apiJson("/api/users/me", { method: "DELETE" });
     } catch (error) {
-      setSettingsError(error instanceof Error ? error.message : "Account deletion is not configured yet.");
+      setSettingsError(
+        error instanceof Error
+          ? error.message
+          : "Account deletion is not configured yet.",
+      );
     }
   }
 
@@ -2368,7 +2844,11 @@ export default function CalendarDashboard() {
               ],
               activity: [
                 ...(event.activity ?? []),
-                { id: createId(), text: `Share prepared for ${email}`, at: new Date().toISOString() },
+                {
+                  id: createId(),
+                  text: `Share prepared for ${email}`,
+                  at: new Date().toISOString(),
+                },
               ],
             }
           : event,
@@ -2377,7 +2857,10 @@ export default function CalendarDashboard() {
     setShareDrafts((current) => ({ ...current, [eventId]: "" }));
   }
 
-  function updateNotificationSetting(key: keyof AppSettings["notifications"], value: boolean | string) {
+  function updateNotificationSetting(
+    key: keyof AppSettings["notifications"],
+    value: boolean | string,
+  ) {
     if (
       (key === "desktopNotifications" || key === "mobileNotifications") &&
       value === true
@@ -2413,14 +2896,17 @@ export default function CalendarDashboard() {
     if (!label) return;
 
     try {
-      const payload = await apiJson<{ category: DbCategory }>("/api/categories", {
-        method: "POST",
-        body: JSON.stringify({
-          name: label,
-          icon: tagDraft.icon.trim() || "tag",
-          color: tagDraft.color,
-        }),
-      });
+      const payload = await apiJson<{ category: DbCategory }>(
+        "/api/categories",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            name: label,
+            icon: tagDraft.icon.trim() || "tag",
+            color: tagDraft.color,
+          }),
+        },
+      );
       const newTag = mapCategory(payload.category);
       setTags((current) => [...current, newTag]);
       setDraft((current) => ({ ...current, category: newTag.id }));
@@ -2428,12 +2914,20 @@ export default function CalendarDashboard() {
       setTagDraft({ label: "", icon: "tag", color: "#007aff" });
       setTagModalOpen(false);
     } catch (error) {
-      setWorkspaceMessage(error instanceof Error ? error.message : "Could not create category.");
+      setWorkspaceMessage(
+        error instanceof Error ? error.message : "Could not create category.",
+      );
     }
   }
 
   return (
     <main className="arcgenda-app h-dvh overflow-hidden bg-[var(--background)] text-[var(--foreground)]">
+      <div className="fixed left-2 top-2 z-[9999] max-w-[340px] rounded-2xl bg-black/80 p-3 text-xs font-bold text-white">
+  <p>Events in state: {events.length}</p>
+  <p>Filtered events: {filteredEvents.length}</p>
+  <p>Selected date: {selectedKey}</p>
+  <p>Event dates: {[...new Set(events.map((event) => event.date))].join(", ")}</p>
+</div>
       <div className="pointer-events-none fixed inset-0 overflow-hidden">
         <div className="absolute -left-24 top-[-80px] size-72 rounded-full bg-[#ff9bd2]/50 blur-3xl" />
         <div className="absolute right-[-90px] top-28 size-72 rounded-full bg-[#7dd3fc]/55 blur-3xl" />
@@ -2543,7 +3037,11 @@ export default function CalendarDashboard() {
             )}
             {activeTab === "alerts" && <AlertsTab alerts={alertItems} />}
             {activeTab === "stats" && (
-              <StatsTab stats={stats} aiSuggestions={aiSuggestions} aiEnabled={settings.ai.enabled} />
+              <StatsTab
+                stats={stats}
+                aiSuggestions={aiSuggestions}
+                aiEnabled={settings.ai.enabled}
+              />
             )}
             {activeTab === "settings" && (
               <div className="lg:hidden">
@@ -2583,7 +3081,9 @@ export default function CalendarDashboard() {
                   onRequestNotifications={() =>
                     void subscribeToPushNotifications()
                   }
-                  onUnsubscribeNotifications={() => void unsubscribeFromPushNotifications()}
+                  onUnsubscribeNotifications={() =>
+                    void unsubscribeFromPushNotifications()
+                  }
                   onTestNotification={() => void sendTestNotification()}
                   onAiChange={updateAiSetting}
                   onSaveSettings={saveProfileSettings}
@@ -2631,10 +3131,10 @@ export default function CalendarDashboard() {
               activeSection={activeSettingsSection}
               onSectionChange={selectSettingsSection}
               onNotificationChange={updateNotificationSetting}
-              onRequestNotifications={() =>
-                void subscribeToPushNotifications()
+              onRequestNotifications={() => void subscribeToPushNotifications()}
+              onUnsubscribeNotifications={() =>
+                void unsubscribeFromPushNotifications()
               }
-              onUnsubscribeNotifications={() => void unsubscribeFromPushNotifications()}
               onTestNotification={() => void sendTestNotification()}
               onAiChange={updateAiSetting}
               onSaveSettings={saveProfileSettings}
@@ -2755,7 +3255,9 @@ function Header({
         <div className="flex items-center gap-3">
           <BrandMark size="md" />
           <div>
-            <p className="text-sm font-semibold text-[#7c7c8a]">{formatLongDate(today)}</p>
+            <p className="text-sm font-semibold text-[#7c7c8a]">
+              {formatLongDate(today)}
+            </p>
             <h1 className="text-3xl font-semibold tracking-normal">Arcgenda</h1>
           </div>
         </div>
@@ -2797,7 +3299,9 @@ function Header({
                   ].join(" ")}
                 >
                   <span>{item.label}</span>
-                  {selected && <span className="hidden size-2 rounded-full bg-[#7dd3fc] lg:block" />}
+                  {selected && (
+                    <span className="hidden size-2 rounded-full bg-[#7dd3fc] lg:block" />
+                  )}
                 </button>
               );
             })}
@@ -2814,7 +3318,6 @@ function Header({
           />
         </label>
       )}
-
     </header>
   );
 }
@@ -2834,7 +3337,9 @@ function ViewSwitcher({
           onClick={() => setView(option)}
           className={[
             "h-9 rounded-full capitalize transition",
-            view === option ? "bg-white text-[#007aff] shadow-sm" : "text-[#7c7c8a]",
+            view === option
+              ? "bg-white text-[#007aff] shadow-sm"
+              : "text-[#7c7c8a]",
           ].join(" ")}
         >
           {option}
@@ -2855,14 +3360,26 @@ function CalendarControls({
 }) {
   return (
     <div className="mb-4 flex items-center justify-between">
-      <button className="nav-circle" onClick={() => onMove(-1)} aria-label="Previous period">
+      <button
+        className="nav-circle"
+        onClick={() => onMove(-1)}
+        aria-label="Previous period"
+      >
         <ChevronLeft size={21} strokeWidth={2.6} />
       </button>
       <div className="text-center">
-        <h2 className="text-2xl font-semibold tracking-normal">{formatMonthYear(visibleMonth)}</h2>
-        <p className="text-sm font-semibold text-[#7c7c8a]">{filteredCount} planned moments</p>
+        <h2 className="text-2xl font-semibold tracking-normal">
+          {formatMonthYear(visibleMonth)}
+        </h2>
+        <p className="text-sm font-semibold text-[#7c7c8a]">
+          {filteredCount} planned moments
+        </p>
       </div>
-      <button className="nav-circle" onClick={() => onMove(1)} aria-label="Next period">
+      <button
+        className="nav-circle"
+        onClick={() => onMove(1)}
+        aria-label="Next period"
+      >
         <ChevronRight size={21} strokeWidth={2.6} />
       </button>
     </div>
@@ -2886,7 +3403,9 @@ function TagFilters({
         onClick={() => setActiveCategory("all")}
         className={[
           "shrink-0 rounded-full px-4 py-2 text-sm font-semibold shadow-sm transition active:scale-95",
-          activeCategory === "all" ? "bg-[#1d1d1f] text-white" : "bg-white/70 text-[#7c7c8a]",
+          activeCategory === "all"
+            ? "bg-[#1d1d1f] text-white"
+            : "bg-white/70 text-[#7c7c8a]",
         ].join(" ")}
       >
         All
@@ -2897,7 +3416,10 @@ function TagFilters({
           onClick={() => setActiveCategory(tag.id)}
           className="shrink-0 rounded-full px-4 py-2 text-sm font-semibold shadow-sm transition active:scale-95"
           style={{
-            background: activeCategory === tag.id ? `${tag.color}24` : "rgba(255,255,255,.7)",
+            background:
+              activeCategory === tag.id
+                ? `${tag.color}24`
+                : "rgba(255,255,255,.7)",
             color: activeCategory === tag.id ? tag.color : "#7c7c8a",
           }}
         >
@@ -2962,7 +3484,10 @@ function MonthView({
                 {dayEvents.slice(0, 3).map((event) => (
                   <span
                     key={event.id}
-                    className={["size-1.5 rounded-full", event.status === "cancelled" ? "opacity-35" : ""].join(" ")}
+                    className={[
+                      "size-1.5 rounded-full",
+                      event.status === "cancelled" ? "opacity-35" : "",
+                    ].join(" ")}
                     style={{ backgroundColor: tagFor(event).color }}
                   />
                 ))}
@@ -3000,13 +3525,17 @@ function WeekView({
             onClick={() => onSelect(day)}
             className={[
               "min-h-28 rounded-[24px] border border-white/60 p-2 text-left shadow-lg backdrop-blur-2xl transition active:scale-95",
-              selected ? "bg-[#1d1d1f] text-white" : "bg-white/62 text-[#27272a]",
+              selected
+                ? "bg-[#1d1d1f] text-white"
+                : "bg-white/62 text-[#27272a]",
             ].join(" ")}
           >
             <span className="block text-xs font-bold uppercase opacity-70">
               {new Intl.DateTimeFormat("en", { weekday: "short" }).format(day)}
             </span>
-            <span className="mt-1 block text-xl font-semibold">{day.getDate()}</span>
+            <span className="mt-1 block text-xl font-semibold">
+              {day.getDate()}
+            </span>
             <span className="mt-3 flex flex-col gap-1">
               {dayEvents.slice(0, 3).map((event) => (
                 <span
@@ -3036,11 +3565,15 @@ function DayTimeline({
 }) {
   return (
     <section className="rounded-[28px] border border-white/60 bg-white/62 p-4 shadow-xl shadow-[#8173ff]/10 backdrop-blur-2xl">
-      <p className="text-sm font-bold text-[#8e8e93]">{formatLongDate(selectedDate)}</p>
+      <p className="text-sm font-bold text-[#8e8e93]">
+        {formatLongDate(selectedDate)}
+      </p>
       <div className="relative mt-4 space-y-3">
         {timelineSlots.map((slot) => (
           <div key={slot} className="grid grid-cols-[54px_1fr] gap-3">
-            <span className="pt-1 text-xs font-bold text-[#9b9baa]">{slot}</span>
+            <span className="pt-1 text-xs font-bold text-[#9b9baa]">
+              {slot}
+            </span>
             <div className="min-h-12 border-t border-dashed border-[#d9d9e3]" />
           </div>
         ))}
@@ -3066,7 +3599,10 @@ function DayTimeline({
                 >
                   {event.title}
                 </span>
-                <span className="text-xs font-bold" style={{ color: tag.color }}>
+                <span
+                  className="text-xs font-bold"
+                  style={{ color: tag.color }}
+                >
                   {event.time}
                 </span>
               </span>
@@ -3129,7 +3665,9 @@ function Agenda({
       <div className="mb-3 flex items-center justify-between">
         <div>
           <p className="text-sm font-bold text-[#8e8e93]">Agenda</p>
-          <h3 className="text-xl font-semibold tracking-normal">{formatLongDate(selectedDate)}</h3>
+          <h3 className="text-xl font-semibold tracking-normal">
+            {formatLongDate(selectedDate)}
+          </h3>
         </div>
         <span className="rounded-full bg-white/70 px-3 py-1 text-sm font-bold text-[#007aff] shadow-sm">
           {events.length} events
@@ -3137,7 +3675,10 @@ function Agenda({
       </div>
       <div className="space-y-3">
         {events.length === 0 ? (
-          <EmptyState title="Nothing scheduled" body="Add an event or switch filters to see more." />
+          <EmptyState
+            title="Nothing scheduled"
+            body="Add an event or switch filters to see more."
+          />
         ) : (
           events.map((event) => (
             <EventCard
@@ -3150,15 +3691,21 @@ function Agenda({
               onUndoCancel={() => onUndoCancel(event.id)}
               unboundTasks={unboundTasks}
               taskDraft={taskDrafts[event.id] ?? ""}
-              onTaskDraftChange={(value) => setTaskDrafts({ ...taskDrafts, [event.id]: value })}
+              onTaskDraftChange={(value) =>
+                setTaskDrafts({ ...taskDrafts, [event.id]: value })
+              }
               onCreateTask={() => onCreateTask(event.id)}
               onLinkTask={(taskId) => onLinkTask(event.id, taskId)}
               onToggleTask={onToggleTask}
               onUnlinkTask={(taskId) => onUnlinkTask(event.id, taskId)}
               onDeleteTask={onDeleteTask}
-              calendar={calendars.find((calendar) => calendar.id === (event.calendarId ?? "personal"))}
+              calendar={calendars.find(
+                (calendar) => calendar.id === (event.calendarId ?? "personal"),
+              )}
               shareDraft={shareDrafts[event.id] ?? ""}
-              onShareDraftChange={(value) => setShareDrafts({ ...shareDrafts, [event.id]: value })}
+              onShareDraftChange={(value) =>
+                setShareDrafts({ ...shareDrafts, [event.id]: value })
+              }
               onShare={() => onShareEvent(event.id)}
             />
           ))
@@ -3219,16 +3766,26 @@ function EventCard({
         "event-card-shell rounded-[28px] p-4 shadow-xl shadow-black/5 ring-1 ring-white/70 transition",
         cancelled ? "opacity-60 grayscale-[0.25]" : "",
       ].join(" ")}
-      style={{ background: `linear-gradient(135deg, ${tag.color}22, rgba(255,255,255,.78))` }}
+      style={{
+        background: `linear-gradient(135deg, ${tag.color}22, rgba(255,255,255,.78))`,
+      }}
     >
       <div className="flex gap-3">
-        <div className="mt-1 h-14 w-1.5 rounded-full" style={{ backgroundColor: tag.color }} />
+        <div
+          className="mt-1 h-14 w-1.5 rounded-full"
+          style={{ backgroundColor: tag.color }}
+        />
         <div className="min-w-0 flex-1">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
               <div className="flex items-center gap-2">
                 {event.pinned && <Pin size={14} className="text-[#ff9500]" />}
-                <h4 className={["truncate text-base font-semibold", cancelled ? "line-through decoration-2" : ""].join(" ")}>
+                <h4
+                  className={[
+                    "truncate text-base font-semibold",
+                    cancelled ? "line-through decoration-2" : "",
+                  ].join(" ")}
+                >
                   {event.title}
                 </h4>
                 {cancelled && (
@@ -3238,10 +3795,13 @@ function EventCard({
                 )}
               </div>
               <p className="mt-1 text-sm font-semibold text-[#7c7c8a]">
-                {calendar?.name ?? "Personal"} · {event.recurrence === "none" ? "One-time" : event.recurrence} · {event.priority} priority
+                {calendar?.name ?? "Personal"} ·{" "}
+                {event.recurrence === "none" ? "One-time" : event.recurrence} ·{" "}
+                {event.priority} priority
               </p>
               <p className="mt-1 text-xs font-bold text-[#8e8e93]">
-                Created by {event.createdBy ?? "you"} · Last edited by {event.lastEditedBy ?? "you"}
+                Created by {event.createdBy ?? "you"} · Last edited by{" "}
+                {event.lastEditedBy ?? "you"}
               </p>
               {cancelled && event.cancellationReason && (
                 <p className="mt-2 text-sm font-semibold text-[#8a5a55]">
@@ -3251,7 +3811,10 @@ function EventCard({
             </div>
             <div className="flex shrink-0 gap-1">
               {cancelled ? (
-                <IconButton label={`Undo cancellation for ${event.title}`} onClick={onUndoCancel}>
+                <IconButton
+                  label={`Undo cancellation for ${event.title}`}
+                  onClick={onUndoCancel}
+                >
                   <RotateCcw size={15} />
                 </IconButton>
               ) : (
@@ -3259,21 +3822,42 @@ function EventCard({
                   <IconButton label={`Edit ${event.title}`} onClick={onEdit}>
                     <Edit3 size={15} />
                   </IconButton>
-                  <IconButton label={`Cancel ${event.title}`} onClick={onCancel} danger>
+                  <IconButton
+                    label={`Cancel ${event.title}`}
+                    onClick={onCancel}
+                    danger
+                  >
                     <CircleX size={16} />
                   </IconButton>
                 </>
               )}
-              <IconButton label={`Delete ${event.title}`} onClick={onDelete} danger>
+              <IconButton
+                label={`Delete ${event.title}`}
+                onClick={onDelete}
+                danger
+              >
                 <Trash2 size={15} />
               </IconButton>
             </div>
           </div>
           <div className="mt-3 flex flex-wrap gap-2 text-sm font-semibold text-[#636366]">
-            <Chip icon={<Clock3 size={14} />} text={`${event.time} · ${event.duration}`} />
+            <Chip
+              icon={<Clock3 size={14} />}
+              text={`${event.time} · ${event.duration}`}
+            />
             <Chip icon={<MapPin size={14} />} text={event.location} />
-            {event.tasks.length > 0 && <Chip icon={<Check size={14} />} text={`${doneTasks}/${event.tasks.length}`} />}
-            {event.rescheduleReminders.length > 0 && <Chip icon={<RotateCcw size={14} />} text={`${event.rescheduleReminders.length} reschedule`} />}
+            {event.tasks.length > 0 && (
+              <Chip
+                icon={<Check size={14} />}
+                text={`${doneTasks}/${event.tasks.length}`}
+              />
+            )}
+            {event.rescheduleReminders.length > 0 && (
+              <Chip
+                icon={<RotateCcw size={14} />}
+                text={`${event.rescheduleReminders.length} reschedule`}
+              />
+            )}
           </div>
           <div className="mt-4 rounded-3xl bg-white/55 p-3 backdrop-blur">
             <div className="mb-2 flex items-center justify-between gap-2">
@@ -3285,7 +3869,9 @@ function EventCard({
               )}
             </div>
             {event.tasks.length === 0 ? (
-              <p className="text-sm font-semibold text-[#8e8e93]">No linked tasks yet.</p>
+              <p className="text-sm font-semibold text-[#8e8e93]">
+                No linked tasks yet.
+              </p>
             ) : (
               <div className="space-y-2">
                 {event.tasks.map((task) => (
@@ -3298,7 +3884,9 @@ function EventCard({
                       onClick={() => onToggleTask(task.id)}
                       className={[
                         "grid size-7 place-items-center rounded-full transition active:scale-95",
-                        task.done ? "bg-[#34c759] text-white" : "bg-[#f2f2f7] text-transparent",
+                        task.done
+                          ? "bg-[#34c759] text-white"
+                          : "bg-[#f2f2f7] text-transparent",
                       ].join(" ")}
                       aria-label={`Toggle ${task.title}`}
                     >
@@ -3320,10 +3908,17 @@ function EventCard({
                       )}
                     </div>
                     <div className="flex gap-1">
-                      <IconButton label={`Unlink ${task.title}`} onClick={() => onUnlinkTask(task.id)}>
+                      <IconButton
+                        label={`Unlink ${task.title}`}
+                        onClick={() => onUnlinkTask(task.id)}
+                      >
                         <X size={14} />
                       </IconButton>
-                      <IconButton label={`Delete ${task.title}`} onClick={() => onDeleteTask(task.id)} danger>
+                      <IconButton
+                        label={`Delete ${task.title}`}
+                        onClick={() => onDeleteTask(task.id)}
+                        danger
+                      >
                         <Trash2 size={14} />
                       </IconButton>
                     </div>
@@ -3334,7 +3929,9 @@ function EventCard({
             <div className="mt-3 grid grid-cols-[1fr_auto] gap-2">
               <input
                 value={taskDraft}
-                onChange={(inputEvent) => onTaskDraftChange(inputEvent.target.value)}
+                onChange={(inputEvent) =>
+                  onTaskDraftChange(inputEvent.target.value)
+                }
                 className="h-10 min-w-0 rounded-2xl bg-white/75 px-3 text-sm font-semibold outline-none placeholder:text-[#9b9baa]"
                 placeholder="New task for this event"
               />
@@ -3368,7 +3965,9 @@ function EventCard({
           </div>
           <div className="mt-3 rounded-3xl bg-white/55 p-3 backdrop-blur">
             <div className="mb-2 flex items-center justify-between gap-2">
-              <p className="text-sm font-bold text-[#636366]">Specific event sharing</p>
+              <p className="text-sm font-bold text-[#636366]">
+                Specific event sharing
+              </p>
               <span className="rounded-full bg-[#f2f2f7] px-2 py-0.5 text-[11px] font-bold text-[#8e8e93]">
                 Safe placeholder
               </span>
@@ -3376,7 +3975,9 @@ function EventCard({
             <div className="grid grid-cols-[1fr_auto] gap-2">
               <input
                 value={shareDraft}
-                onChange={(inputEvent) => onShareDraftChange(inputEvent.target.value)}
+                onChange={(inputEvent) =>
+                  onShareDraftChange(inputEvent.target.value)
+                }
                 className="h-10 min-w-0 rounded-2xl bg-white/75 px-3 text-sm font-semibold outline-none placeholder:text-[#9b9baa]"
                 placeholder="person@example.com"
               />
@@ -3390,7 +3991,10 @@ function EventCard({
               </button>
             </div>
             {(event.sharedWith ?? []).map((share) => (
-              <p key={share.id} className="mt-2 truncate text-xs font-bold text-[#7c7c8a]">
+              <p
+                key={share.id}
+                className="mt-2 truncate text-xs font-bold text-[#7c7c8a]"
+              >
                 {share.email} · {share.role} · {share.status}
               </p>
             ))}
@@ -3434,7 +4038,10 @@ function CalendarStrip({
                 : "border-white/50 bg-white/35 text-[#8e8e93]",
             ].join(" ")}
           >
-            <span className="size-2.5 rounded-full" style={{ backgroundColor: calendar.color }} />
+            <span
+              className="size-2.5 rounded-full"
+              style={{ backgroundColor: calendar.color }}
+            />
             {calendar.name}
             {calendar.shared && <Users size={14} />}
           </button>
@@ -3461,7 +4068,11 @@ function TasksTab({
 }) {
   return (
     <section>
-      <SectionTitle eyebrow="Tasks" title={`Checklist for ${title}`} count={tasks.length} />
+      <SectionTitle
+        eyebrow="Tasks"
+        title={`Checklist for ${title}`}
+        count={tasks.length}
+      />
       <div className="mb-4 grid grid-cols-3 rounded-full bg-white/60 p-1 text-sm font-bold shadow-sm backdrop-blur-xl">
         {taskViewOptions.map((option) => (
           <button
@@ -3470,7 +4081,9 @@ function TasksTab({
             onClick={() => setTaskView(option)}
             className={[
               "h-9 rounded-full capitalize transition",
-              taskView === option ? "bg-[#1d1d1f] text-white shadow-lg shadow-black/15" : "text-[#636366]",
+              taskView === option
+                ? "bg-[#1d1d1f] text-white shadow-lg shadow-black/15"
+                : "text-[#636366]",
             ].join(" ")}
           >
             {option}
@@ -3479,34 +4092,51 @@ function TasksTab({
       </div>
       <div className="space-y-3">
         {tasks.length === 0 ? (
-          <EmptyState title={`No tasks for this ${taskView}.`} body="Switch the task range or move the calendar to another date." />
+          <EmptyState
+            title={`No tasks for this ${taskView}.`}
+            body="Switch the task range or move the calendar to another date."
+          />
         ) : (
           tasks.map((task) => (
-          <article
-            key={task.id}
-            className="flex w-full items-center gap-3 rounded-[24px] border border-white/60 bg-white/70 p-4 text-left shadow-lg shadow-black/5 backdrop-blur-xl"
-          >
-            <button
-              type="button"
-              onClick={() => onToggle(task.id)}
-              className={["grid size-8 place-items-center rounded-full", task.done ? "bg-[#34c759] text-white" : "bg-[#f2f2f7] text-transparent"].join(" ")}
-              aria-label={`Toggle ${task.title}`}
+            <article
+              key={task.id}
+              className="flex w-full items-center gap-3 rounded-[24px] border border-white/60 bg-white/70 p-4 text-left shadow-lg shadow-black/5 backdrop-blur-xl"
             >
-              <Check size={16} />
-            </button>
-            <span className="min-w-0 flex-1">
-              <span className={["block truncate text-base font-semibold", task.done ? "line-through text-[#8e8e93]" : ""].join(" ")}>
-                {task.title}
+              <button
+                type="button"
+                onClick={() => onToggle(task.id)}
+                className={[
+                  "grid size-8 place-items-center rounded-full",
+                  task.done
+                    ? "bg-[#34c759] text-white"
+                    : "bg-[#f2f2f7] text-transparent",
+                ].join(" ")}
+                aria-label={`Toggle ${task.title}`}
+              >
+                <Check size={16} />
+              </button>
+              <span className="min-w-0 flex-1">
+                <span
+                  className={[
+                    "block truncate text-base font-semibold",
+                    task.done ? "line-through text-[#8e8e93]" : "",
+                  ].join(" ")}
+                >
+                  {task.title}
+                </span>
+                <span className="block truncate text-sm font-semibold text-[#8e8e93]">
+                  {task.eventTitle}
+                  {task.eventStatus === "cancelled" ? " · event cancelled" : ""}
+                </span>
               </span>
-              <span className="block truncate text-sm font-semibold text-[#8e8e93]">
-                {task.eventTitle}
-                {task.eventStatus === "cancelled" ? " · event cancelled" : ""}
-              </span>
-            </span>
-            <IconButton label={`Delete ${task.title}`} onClick={() => onDelete(task.id)} danger>
-              <Trash2 size={15} />
-            </IconButton>
-          </article>
+              <IconButton
+                label={`Delete ${task.title}`}
+                onClick={() => onDelete(task.id)}
+                danger
+              >
+                <Trash2 size={15} />
+              </IconButton>
+            </article>
           ))
         )}
       </div>
@@ -3520,9 +4150,14 @@ function AlertsTab({ alerts }: { alerts: RescheduleReminder[] }) {
       <SectionTitle eyebrow="Alerts" title="Reminders" count={alerts.length} />
       <div className="space-y-3">
         {alerts.length === 0 ? (
-          <EmptyState title="No reminders" body="Cancelled events can create reschedule reminders here." />
+          <EmptyState
+            title="No reminders"
+            body="Cancelled events can create reschedule reminders here."
+          />
         ) : (
-          alerts.map((alert) => <ReminderCard key={alert.id} reminder={alert} />)
+          alerts.map((alert) => (
+            <ReminderCard key={alert.id} reminder={alert} />
+          ))
         )}
       </div>
     </section>
@@ -3540,7 +4175,11 @@ function StatsTab({
 }) {
   return (
     <section className="space-y-3">
-      <SectionTitle eyebrow="Free stats" title="Progress dashboard" count={stats.totalEvents} />
+      <SectionTitle
+        eyebrow="Free stats"
+        title="Progress dashboard"
+        count={stats.totalEvents}
+      />
       <div className="grid grid-cols-2 gap-3">
         <Stat label="Events" value={stats.totalEvents} />
         <Stat label="Done" value={stats.completedEvents} />
@@ -3550,15 +4189,26 @@ function StatsTab({
       <div className="rounded-[28px] border border-white/60 bg-white/70 p-4 shadow-lg shadow-black/5 backdrop-blur-xl">
         <p className="text-sm font-bold text-[#8e8e93]">Task completion</p>
         <div className="mt-3 h-3 rounded-full bg-[#f2f2f7]">
-          <div className="h-3 rounded-full bg-[#34c759]" style={{ width: `${stats.taskCompletionRate}%` }} />
+          <div
+            className="h-3 rounded-full bg-[#34c759]"
+            style={{ width: `${stats.taskCompletionRate}%` }}
+          />
         </div>
-        <p className="mt-2 text-sm font-bold text-[#636366]">{stats.taskCompletionRate}% complete</p>
+        <p className="mt-2 text-sm font-bold text-[#636366]">
+          {stats.taskCompletionRate}% complete
+        </p>
       </div>
       <div className="rounded-[28px] border border-white/60 bg-white/70 p-4 shadow-lg shadow-black/5 backdrop-blur-xl">
         <p className="text-sm font-bold text-[#8e8e93]">Patterns</p>
-        <p className="mt-2 text-sm font-semibold">Most used tag: {stats.mostUsedCategory}</p>
-        <p className="mt-1 text-sm font-semibold">Most active day: {stats.mostActiveDay}</p>
-        <p className="mt-3 text-sm font-semibold text-[#636366]">{stats.monthlySummary}</p>
+        <p className="mt-2 text-sm font-semibold">
+          Most used tag: {stats.mostUsedCategory}
+        </p>
+        <p className="mt-1 text-sm font-semibold">
+          Most active day: {stats.mostActiveDay}
+        </p>
+        <p className="mt-3 text-sm font-semibold text-[#636366]">
+          {stats.monthlySummary}
+        </p>
       </div>
       <div className="rounded-[28px] border border-white/60 bg-white/70 p-4 shadow-lg shadow-black/5 backdrop-blur-xl">
         <div className="flex items-center gap-2">
@@ -3573,7 +4223,10 @@ function StatsTab({
         {aiEnabled && (
           <div className="mt-3 space-y-2">
             {aiSuggestions.map((suggestion) => (
-              <p key={suggestion} className="rounded-2xl bg-[#f7eaff] px-3 py-2 text-sm font-semibold text-[#66308a]">
+              <p
+                key={suggestion}
+                className="rounded-2xl bg-[#f7eaff] px-3 py-2 text-sm font-semibold text-[#66308a]"
+              >
                 {suggestion}
               </p>
             ))}
@@ -3634,13 +4287,24 @@ function SettingsTab({
   calendarDraft: { name: string; color: string };
   setCalendarDraft: (draft: { name: string; color: string }) => void;
   onCreateCalendar: (event: FormEvent<HTMLFormElement>) => void;
-  onUpdateCalendar: (calendarId: string, updates: { name?: string; color?: string }) => void;
+  onUpdateCalendar: (
+    calendarId: string,
+    updates: { name?: string; color?: string },
+  ) => void;
   onAskDeleteCalendar: (calendar: AppCalendar) => void;
-  onUpdateMember: (calendarId: string, memberId: string, role: "owner" | "editor" | "viewer") => void;
+  onUpdateMember: (
+    calendarId: string,
+    memberId: string,
+    role: "owner" | "editor" | "viewer",
+  ) => void;
   onRemoveMember: (calendarId: string, memberId: string) => void;
   onLeaveCalendar: (calendar: AppCalendar) => void;
   memberDraft: { calendarId: string; email: string; role: "editor" | "viewer" };
-  setMemberDraft: (draft: { calendarId: string; email: string; role: "editor" | "viewer" }) => void;
+  setMemberDraft: (draft: {
+    calendarId: string;
+    email: string;
+    role: "editor" | "viewer";
+  }) => void;
   onAddMember: (event: FormEvent<HTMLFormElement>) => void;
   settings: AppSettings;
   setSettings: (settings: AppSettings) => void;
@@ -3656,7 +4320,10 @@ function SettingsTab({
   canVibrate: boolean;
   activeSection: SettingsSectionId;
   onSectionChange: (section: SettingsSectionId) => void;
-  onNotificationChange: (key: keyof AppSettings["notifications"], value: boolean | string) => void;
+  onNotificationChange: (
+    key: keyof AppSettings["notifications"],
+    value: boolean | string,
+  ) => void;
   onRequestNotifications: () => void;
   onUnsubscribeNotifications: () => void;
   onTestNotification: () => void;
@@ -3665,11 +4332,14 @@ function SettingsTab({
   onRevertSettings: () => void;
   onOpenDeleteAccount: () => void;
 }) {
-  const selectedCalendar = calendars.find((calendar) => calendar.id === memberDraft.calendarId);
+  const selectedCalendar = calendars.find(
+    (calendar) => calendar.id === memberDraft.calendarId,
+  );
   const sharedCalendarUsed = calendars.some(
     (calendar) => calendar.shared && calendar.id !== memberDraft.calendarId,
   );
-  const memberInviteDisabled = !selectedCalendar || (!selectedCalendar.shared && sharedCalendarUsed);
+  const memberInviteDisabled =
+    !selectedCalendar || (!selectedCalendar.shared && sharedCalendarUsed);
   const sharedCalendars = calendars.filter((calendar) => calendar.shared);
   const hasUnsavedSettings = useMemo(
     () => JSON.stringify(settings) !== JSON.stringify(savedSettings),
@@ -3689,15 +4359,22 @@ function SettingsTab({
       : []),
     ["quietHours", "Quiet hours"],
     ["sound", "Sound"],
-    ...(canVibrate && notificationCapabilities.supportsVibration ? ([["vibration", "Vibration"]] as const) : []),
+    ...(canVibrate && notificationCapabilities.supportsVibration
+      ? ([["vibration", "Vibration"]] as const)
+      : []),
   ] as const;
 
   return (
     <section className="space-y-3">
-      <SectionTitle eyebrow="Settings" title="Account workspace" count={calendars.length} />
+      <SectionTitle
+        eyebrow="Settings"
+        title="Account workspace"
+        count={calendars.length}
+      />
       {hasUnsavedSettings && (
         <p className="rounded-2xl bg-[#fff4df] px-4 py-3 text-xs font-bold text-[#9a5b00]">
-          Unsaved changes are only previews. Save to keep them, or leave Settings/switch windows to revert.
+          Unsaved changes are only previews. Save to keep them, or leave
+          Settings/switch windows to revert.
         </p>
       )}
       <div className="sticky top-0 z-10 grid grid-cols-2 gap-2 rounded-[24px] bg-white/70 p-2 shadow-lg shadow-black/5 backdrop-blur-xl lg:top-3">
@@ -3718,10 +4395,26 @@ function SettingsTab({
           Revert
         </button>
       </div>
-      {workspaceLoading && <p className="rounded-2xl bg-white/70 px-4 py-3 text-sm font-bold text-[#007aff]">Loading account data...</p>}
-      {workspaceMessage && <p className="rounded-2xl bg-white/70 px-4 py-3 text-sm font-bold text-[#636366]">{workspaceMessage}</p>}
-      {settingsMessage && <p className="rounded-2xl bg-[#e9fbe9] px-4 py-3 text-sm font-bold text-[#228f3b]">{settingsMessage}</p>}
-      {settingsError && <p className="rounded-2xl bg-[#ffe8e6] px-4 py-3 text-sm font-bold text-[#ff3b30]">{settingsError}</p>}
+      {workspaceLoading && (
+        <p className="rounded-2xl bg-white/70 px-4 py-3 text-sm font-bold text-[#007aff]">
+          Loading account data...
+        </p>
+      )}
+      {workspaceMessage && (
+        <p className="rounded-2xl bg-white/70 px-4 py-3 text-sm font-bold text-[#636366]">
+          {workspaceMessage}
+        </p>
+      )}
+      {settingsMessage && (
+        <p className="rounded-2xl bg-[#e9fbe9] px-4 py-3 text-sm font-bold text-[#228f3b]">
+          {settingsMessage}
+        </p>
+      )}
+      {settingsError && (
+        <p className="rounded-2xl bg-[#ffe8e6] px-4 py-3 text-sm font-bold text-[#ff3b30]">
+          {settingsError}
+        </p>
+      )}
 
       <SettingsCard
         id="settings-profile"
@@ -3731,7 +4424,9 @@ function SettingsTab({
         title="Profile"
         icon={<Users size={18} />}
       >
-        <p className="text-sm font-semibold text-[#636366]">Signed in as {session?.user.email}</p>
+        <p className="text-sm font-semibold text-[#636366]">
+          Signed in as {session?.user.email}
+        </p>
         <label className="mt-3 block text-xs font-black uppercase tracking-[0.12em] text-[#8e8e93]">
           General account name
         </label>
@@ -3747,33 +4442,39 @@ function SettingsTab({
           placeholder="Your account name"
         />
         <p className="mt-2 text-xs font-bold text-[#8e8e93]">
-          This is your default name. You can use different display names inside shared calendars.
+          This is your default name. You can use different display names inside
+          shared calendars.
         </p>
         {sharedCalendars.length > 0 && (
           <div className="mt-3 space-y-2">
             {sharedCalendars.map((calendar) => (
-            <label key={calendar.id} className="block">
-              <span className="text-xs font-black text-[#8e8e93]">
-                {calendar.name} display name
-              </span>
-              <input
-                value={settings.profile.calendarDisplayNames[calendar.id] ?? ""}
-                onChange={(event) =>
-                  setSettings({
-                    ...settings,
-                    profile: {
-                      ...settings.profile,
-                      calendarDisplayNames: {
-                        ...settings.profile.calendarDisplayNames,
-                        [calendar.id]: event.target.value,
+              <label key={calendar.id} className="block">
+                <span className="text-xs font-black text-[#8e8e93]">
+                  {calendar.name} display name
+                </span>
+                <input
+                  value={
+                    settings.profile.calendarDisplayNames[calendar.id] ?? ""
+                  }
+                  onChange={(event) =>
+                    setSettings({
+                      ...settings,
+                      profile: {
+                        ...settings.profile,
+                        calendarDisplayNames: {
+                          ...settings.profile.calendarDisplayNames,
+                          [calendar.id]: event.target.value,
+                        },
                       },
-                    },
-                  })
-                }
-                className="input-shell mt-1 w-full"
-                placeholder={settings.profile.accountName || "Display name for this calendar"}
-              />
-            </label>
+                    })
+                  }
+                  className="input-shell mt-1 w-full"
+                  placeholder={
+                    settings.profile.accountName ||
+                    "Display name for this calendar"
+                  }
+                />
+              </label>
             ))}
           </div>
         )}
@@ -3789,7 +4490,11 @@ function SettingsTab({
       >
         <select
           value={settings.theme}
-          onChange={(event) => setSettings({ ...settings, theme: event.target.value as AppSettings["theme"] })}
+          onChange={(event) => {
+            const nextTheme = event.target.value as AppSettings["theme"];
+            setSettings({ ...settings, theme: nextTheme });
+            applyDocumentTheme(nextTheme);
+          }}
           className="input-shell mt-3 w-full"
         >
           <option value="system">System theme</option>
@@ -3797,7 +4502,8 @@ function SettingsTab({
           <option value="dark">Dark</option>
         </select>
         <p className="mt-2 text-xs font-bold text-[#8e8e93]">
-          Theme is part of the profile save flow. Use Save Settings when you are happy with it.
+          Theme is part of the profile save flow. Use Save Settings when you are
+          happy with it.
         </p>
       </SettingsCard>
 
@@ -3809,20 +4515,29 @@ function SettingsTab({
         title="Calendar Settings"
         icon={<CalendarDays size={18} />}
       >
-        <form onSubmit={onCreateCalendar} className="grid grid-cols-[1fr_auto] gap-2">
+        <form
+          onSubmit={onCreateCalendar}
+          className="grid grid-cols-[1fr_auto] gap-2"
+        >
           <input
             value={calendarDraft.name}
-            onChange={(event) => setCalendarDraft({ ...calendarDraft, name: event.target.value })}
+            onChange={(event) =>
+              setCalendarDraft({ ...calendarDraft, name: event.target.value })
+            }
             className="input-shell"
             placeholder="New calendar name"
             disabled={calendars.length >= 3}
           />
-          <button className="rounded-2xl bg-[#007aff] px-4 text-sm font-bold text-white disabled:opacity-50" disabled={calendars.length >= 3}>
+          <button
+            className="rounded-2xl bg-[#007aff] px-4 text-sm font-bold text-white disabled:opacity-50"
+            disabled={calendars.length >= 3}
+          >
             Add
           </button>
         </form>
         <p className="mt-2 text-xs font-bold text-[#8e8e93]">
-          Free plan: up to 3 calendars total. Shared calendars also count toward your free calendar limit.
+          Free plan: up to 3 calendars total. Shared calendars also count toward
+          your free calendar limit.
         </p>
         <div className="mt-4 space-y-3">
           {calendars.map((calendar) => (
@@ -3831,7 +4546,9 @@ function SettingsTab({
               calendar={calendar}
               onUpdate={onUpdateCalendar}
               onAskDelete={onAskDeleteCalendar}
-              displayName={settings.profile.calendarDisplayNames[calendar.id] ?? ""}
+              displayName={
+                settings.profile.calendarDisplayNames[calendar.id] ?? ""
+              }
               onUpdateMember={onUpdateMember}
               onRemoveMember={onRemoveMember}
               onLeaveCalendar={onLeaveCalendar}
@@ -3853,16 +4570,22 @@ function SettingsTab({
         <form onSubmit={onAddMember} className="mt-3 space-y-2">
           <select
             value={memberDraft.calendarId}
-            onChange={(event) => setMemberDraft({ ...memberDraft, calendarId: event.target.value })}
+            onChange={(event) =>
+              setMemberDraft({ ...memberDraft, calendarId: event.target.value })
+            }
             className="input-shell w-full"
           >
             {calendars.map((calendar) => (
-              <option key={calendar.id} value={calendar.id}>{calendar.name}</option>
+              <option key={calendar.id} value={calendar.id}>
+                {calendar.name}
+              </option>
             ))}
           </select>
           <input
             value={memberDraft.email}
-            onChange={(event) => setMemberDraft({ ...memberDraft, email: event.target.value })}
+            onChange={(event) =>
+              setMemberDraft({ ...memberDraft, email: event.target.value })
+            }
             className="input-shell w-full"
             placeholder="member@example.com"
             disabled={memberInviteDisabled}
@@ -3870,7 +4593,10 @@ function SettingsTab({
           <select
             value={memberDraft.role}
             onChange={(event) =>
-              setMemberDraft({ ...memberDraft, role: event.target.value as "editor" | "viewer" })
+              setMemberDraft({
+                ...memberDraft,
+                role: event.target.value as "editor" | "viewer",
+              })
             }
             className="input-shell w-full"
             disabled={memberInviteDisabled}
@@ -3886,7 +4612,8 @@ function SettingsTab({
           </button>
           {memberInviteDisabled && (
             <p className="text-xs font-bold text-[#ff9500]">
-              Free plan includes one shared calendar. Remove sharing from another calendar before inviting here.
+              Free plan includes one shared calendar. Remove sharing from
+              another calendar before inviting here.
             </p>
           )}
         </form>
@@ -3902,7 +4629,9 @@ function SettingsTab({
       >
         <div className="rounded-2xl bg-[#f2f2f7] p-3">
           <p className="text-sm font-bold text-[#1d1d1f]">
-            Permission on this {isMobileDevice ? "mobile/PWA device" : "desktop browser"}: {notificationPermission}
+            Permission on this{" "}
+            {isMobileDevice ? "mobile/PWA device" : "desktop browser"}:{" "}
+            {notificationPermission}
           </p>
           <p className="mt-1 text-xs font-bold leading-5 text-[#8e8e93]">
             {!notificationCapabilities.supportsNotifications
@@ -3910,7 +4639,8 @@ function SettingsTab({
               : !notificationCapabilities.supportsServiceWorker
                 ? "Service workers are not supported, so closed-app reminders cannot run here."
                 : !notificationCapabilities.supportsPush
-                  ? notificationCapabilities.isIOS && !notificationCapabilities.isPWAInstalled
+                  ? notificationCapabilities.isIOS &&
+                    !notificationCapabilities.isPWAInstalled
                     ? "Install Arcgenda to Home Screen to enable iPhone push notifications."
                     : "Web Push is not supported in this browser."
                   : notificationPermission === "granted"
@@ -3920,7 +4650,8 @@ function SettingsTab({
                       : "Click Enable push. If no popup appears, use the lock icon in the address bar and allow notifications."}
           </p>
           <p className="mt-2 text-xs font-bold leading-5 text-[#8e8e93]">
-            Closed-app reminders require Web Push, VAPID keys, a saved device subscription, and a cron scheduler.
+            Closed-app reminders require Web Push, VAPID keys, a saved device
+            subscription, and a cron scheduler.
           </p>
           {!pushConfigured && (
             <p className="mt-2 text-xs font-black text-[#ff9500]">
@@ -3971,7 +4702,9 @@ function SettingsTab({
               key={key}
               checked={Boolean(settings.notifications[key])}
               label={label}
-              onClick={() => onNotificationChange(key, !settings.notifications[key])}
+              onClick={() =>
+                onNotificationChange(key, !settings.notifications[key])
+              }
             />
           ))}
         </div>
@@ -3979,21 +4712,27 @@ function SettingsTab({
           <input
             type="time"
             value={settings.notifications.quietStart}
-            onChange={(event) => onNotificationChange("quietStart", event.target.value)}
+            onChange={(event) =>
+              onNotificationChange("quietStart", event.target.value)
+            }
             className="input-shell w-full"
             aria-label="Quiet hours start"
           />
           <input
             type="time"
             value={settings.notifications.quietEnd}
-            onChange={(event) => onNotificationChange("quietEnd", event.target.value)}
+            onChange={(event) =>
+              onNotificationChange("quietEnd", event.target.value)
+            }
             className="input-shell w-full"
             aria-label="Quiet hours end"
           />
         </div>
         <select
           value={settings.notifications.defaultTiming}
-          onChange={(event) => onNotificationChange("defaultTiming", event.target.value)}
+          onChange={(event) =>
+            onNotificationChange("defaultTiming", event.target.value)
+          }
           className="input-shell mt-2 w-full"
         >
           <option value="At time of event">At time of event</option>
@@ -4005,7 +4744,11 @@ function SettingsTab({
           <option value="1 day before">1 day before</option>
         </select>
         <p className="mt-3 text-xs font-bold text-[#8e8e93]">
-          Default timing decides how early event reminders alert you, for example 15 minutes before a meeting. Quiet hours pause reminders between the start and end times so Arcgenda does not interrupt sleep or focus time. Device-only options appear only when this device supports them.
+          Default timing decides how early event reminders alert you, for
+          example 15 minutes before a meeting. Quiet hours pause reminders
+          between the start and end times so Arcgenda does not interrupt sleep
+          or focus time. Device-only options appear only when this device
+          supports them.
         </p>
       </SettingsCard>
 
@@ -4017,14 +4760,16 @@ function SettingsTab({
         title="AI Lite and privacy"
         icon={<Shield size={18} />}
       >
-        {([
-          ["enabled", "Enable AI Lite"],
-          ["scheduling", "Smart scheduling suggestions"],
-          ["insights", "Productivity insights"],
-          ["reschedule", "Smart reschedule suggestions"],
-          ["weeklySummary", "Weekly summary text"],
-          ["privateMode", "Private mode"],
-        ] as const).map(([key, label]) => (
+        {(
+          [
+            ["enabled", "Enable AI Lite"],
+            ["scheduling", "Smart scheduling suggestions"],
+            ["insights", "Productivity insights"],
+            ["reschedule", "Smart reschedule suggestions"],
+            ["weeklySummary", "Weekly summary text"],
+            ["privateMode", "Private mode"],
+          ] as const
+        ).map(([key, label]) => (
           <Toggle
             key={key}
             checked={settings.ai[key]}
@@ -4033,7 +4778,8 @@ function SettingsTab({
           />
         ))}
         <p className="mt-3 text-xs font-bold text-[#8e8e93]">
-          AI Lite is local and rule-based for now. Future OpenAI/Claude integrations would be opt-in. Your data is not sold.
+          AI Lite is local and rule-based for now. Future OpenAI/Claude
+          integrations would be opt-in. Your data is not sold.
         </p>
       </SettingsCard>
 
@@ -4062,8 +4808,14 @@ function SettingsTab({
         icon={<Sparkles size={18} />}
       >
         <div className="grid grid-cols-2 gap-3">
-          <PlanCard title="Free" body="3 calendars, 1 shared calendar, local AI Lite." />
-          <PlanCard title="Pro preview" body="More calendars, deeper sync, payments coming soon." />
+          <PlanCard
+            title="Free"
+            body="3 calendars, 1 shared calendar, local AI Lite."
+          />
+          <PlanCard
+            title="Pro preview"
+            body="More calendars, deeper sync, payments coming soon."
+          />
         </div>
       </SettingsCard>
 
@@ -4076,7 +4828,8 @@ function SettingsTab({
         icon={<Trash2 size={18} />}
       >
         <p className="text-sm font-semibold leading-6 text-[#636366]">
-          Destructive actions are separated from profile settings so they are harder to hit by accident.
+          Destructive actions are separated from profile settings so they are
+          harder to hit by accident.
         </p>
         <button
           onClick={onOpenDeleteAccount}
@@ -4100,11 +4853,18 @@ function CalendarManagementRow({
   onLeaveCalendar,
 }: {
   calendar: AppCalendar;
-  onUpdate: (calendarId: string, updates: { name?: string; color?: string }) => void;
+  onUpdate: (
+    calendarId: string,
+    updates: { name?: string; color?: string },
+  ) => void;
   onAskDelete: (calendar: AppCalendar) => void;
   displayName: string;
   onChangeDisplayName: (value: string) => void;
-  onUpdateMember: (calendarId: string, memberId: string, role: "owner" | "editor" | "viewer") => void;
+  onUpdateMember: (
+    calendarId: string,
+    memberId: string,
+    role: "owner" | "editor" | "viewer",
+  ) => void;
   onRemoveMember: (calendarId: string, memberId: string) => void;
   onLeaveCalendar: (calendar: AppCalendar) => void;
 }) {
@@ -4127,11 +4887,15 @@ function CalendarManagementRow({
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex items-center gap-2">
-            <span className="size-3 rounded-full" style={{ backgroundColor: calendar.color }} />
+            <span
+              className="size-3 rounded-full"
+              style={{ backgroundColor: calendar.color }}
+            />
             <p className="truncate text-sm font-black">{calendar.name}</p>
           </div>
           <p className="mt-1 text-xs font-bold text-[#8e8e93]">
-            {calendar.shared ? "Shared calendar" : "Private calendar"} · Role: {calendar.role}
+            {calendar.shared ? "Shared calendar" : "Private calendar"} · Role:{" "}
+            {calendar.role}
           </p>
         </div>
         {calendar.shared && (
@@ -4190,7 +4954,9 @@ function CalendarManagementRow({
 
       {calendar.shared && (
         <label className="mt-3 block">
-          <span className="text-xs font-black text-[#8e8e93]">My display name in this calendar</span>
+          <span className="text-xs font-black text-[#8e8e93]">
+            My display name in this calendar
+          </span>
           <input
             value={displayName}
             onChange={(event) => onChangeDisplayName(event.target.value)}
@@ -4203,7 +4969,10 @@ function CalendarManagementRow({
       {calendar.members.length > 0 && (
         <div className="mt-3 space-y-2">
           {calendar.members.map((member) => (
-            <div key={member.id} className="grid gap-2 rounded-2xl bg-[#f2f2f7] p-2 text-xs font-bold text-[#8e8e93] sm:grid-cols-[1fr_auto_auto] sm:items-center">
+            <div
+              key={member.id}
+              className="grid gap-2 rounded-2xl bg-[#f2f2f7] p-2 text-xs font-bold text-[#8e8e93] sm:grid-cols-[1fr_auto_auto] sm:items-center"
+            >
               <span className="min-w-0 truncate">
                 {member.displayName || member.email} · {member.status}
               </span>
@@ -4288,8 +5057,14 @@ function EventComposer({
   onAddTag: () => void;
   submitting: boolean;
 }) {
-  const writableCalendars = calendars.filter((calendar) => calendar.role !== "viewer");
-  const eventStartDate = dateTimeFromDraft(draft.date, draft.time, draft.allDay);
+  const writableCalendars = calendars.filter(
+    (calendar) => calendar.role !== "viewer",
+  );
+  const eventStartDate = dateTimeFromDraft(
+    draft.date,
+    draft.time,
+    draft.allDay,
+  );
   const presetReminderPreview =
     reminderDraft.enabled && reminderDraft.preset !== "custom"
       ? reminderDateTimeFromPreset(eventStartDate, reminderDraft.preset)
@@ -4298,8 +5073,14 @@ function EventComposer({
 
   return (
     <ModalShell>
-      <form onSubmit={kind === "event" ? onSubmit : onSubmitTask} className="max-h-[calc(100dvh-24px)] w-full max-w-md overflow-y-auto rounded-[32px] border border-white/70 bg-white/88 p-4 shadow-2xl shadow-black/20 backdrop-blur-2xl">
-        <ModalHeader title={editing ? "Edit event" : "Create"} onClose={onClose} />
+      <form
+        onSubmit={kind === "event" ? onSubmit : onSubmitTask}
+        className="max-h-[calc(100dvh-24px)] w-full max-w-md overflow-y-auto rounded-[32px] border border-white/70 bg-white/88 p-4 shadow-2xl shadow-black/20 backdrop-blur-2xl"
+      >
+        <ModalHeader
+          title={editing ? "Edit event" : "Create"}
+          onClose={onClose}
+        />
         {!editing && (
           <div className="mb-4 grid grid-cols-2 rounded-full bg-[#f2f2f7] p-1 text-sm font-bold">
             {(["event", "task"] as ComposerKind[]).map((item) => (
@@ -4309,7 +5090,9 @@ function EventComposer({
                 onClick={() => setKind(item)}
                 className={[
                   "h-9 rounded-full capitalize transition",
-                  kind === item ? "bg-white text-[#007aff] shadow-sm" : "text-[#7c7c8a]",
+                  kind === item
+                    ? "bg-white text-[#007aff] shadow-sm"
+                    : "text-[#7c7c8a]",
                 ].join(" ")}
               >
                 {item}
@@ -4322,7 +5105,9 @@ function EventComposer({
             <FieldLabel label="Task name" helper="What do you need to do?">
               <input
                 value={taskDraft.title}
-                onChange={(event) => setTaskDraft({ ...taskDraft, title: event.target.value })}
+                onChange={(event) =>
+                  setTaskDraft({ ...taskDraft, title: event.target.value })
+                }
                 className="input-shell w-full text-base"
                 placeholder="Example: Prepare notes"
                 required
@@ -4333,21 +5118,33 @@ function EventComposer({
                 <input
                   type="date"
                   value={taskDraft.reminderDate}
-                  onChange={(event) => setTaskDraft({ ...taskDraft, reminderDate: event.target.value })}
+                  onChange={(event) =>
+                    setTaskDraft({
+                      ...taskDraft,
+                      reminderDate: event.target.value,
+                    })
+                  }
                   className="input-shell w-full"
                 />
               </FieldLabel>
               <FieldLabel label="Reminder time">
                 <AppleTimePicker
                   value={taskDraft.reminderTime}
-                  onChange={(time) => setTaskDraft({ ...taskDraft, reminderTime: time })}
+                  onChange={(time) =>
+                    setTaskDraft({ ...taskDraft, reminderTime: time })
+                  }
                 />
               </FieldLabel>
             </div>
-            <FieldLabel label="Link to event" helper="Optional. Leave this as no event for a standalone task.">
+            <FieldLabel
+              label="Link to event"
+              helper="Optional. Leave this as no event for a standalone task."
+            >
               <select
                 value={taskDraft.eventId}
-                onChange={(event) => setTaskDraft({ ...taskDraft, eventId: event.target.value })}
+                onChange={(event) =>
+                  setTaskDraft({ ...taskDraft, eventId: event.target.value })
+                }
                 className="input-shell w-full"
               >
                 <option value="none">No event</option>
@@ -4358,190 +5155,298 @@ function EventComposer({
                 ))}
               </select>
             </FieldLabel>
-            <button disabled={submitting} className="mt-4 h-12 w-full rounded-full bg-[#007aff] text-base font-bold text-white shadow-lg shadow-[#007aff]/25 transition active:scale-95 disabled:opacity-55">
+            <button
+              disabled={submitting}
+              className="mt-4 h-12 w-full rounded-full bg-[#007aff] text-base font-bold text-white shadow-lg shadow-[#007aff]/25 transition active:scale-95 disabled:opacity-55"
+            >
               {submitting ? "Creating..." : "Create task"}
             </button>
           </div>
         ) : (
-        <>
-          <div className="space-y-3">
-          <FieldLabel label="Event name" helper="The title shown on your calendar.">
-            <input value={draft.title} onChange={(event) => onChange({ ...draft, title: event.target.value })} className="input-shell w-full text-base" placeholder="Example: Study focus" required />
-          </FieldLabel>
-          <div className="grid grid-cols-2 gap-3">
-            <FieldLabel label="Date">
-              <input type="date" value={draft.date} onChange={(event) => onChange({ ...draft, date: event.target.value })} className="input-shell w-full" />
-            </FieldLabel>
-            <FieldLabel label="Time">
-              <AppleTimePicker
-                value={draft.time}
-                disabled={draft.allDay}
-                onChange={(time) => onChange({ ...draft, time })}
-              />
-            </FieldLabel>
-          </div>
-          <div className="grid grid-cols-[1fr_auto] gap-3">
-            <FieldLabel label="Tag">
-              <select value={draft.category} onChange={(event) => onChange({ ...draft, category: event.target.value })} className="input-shell w-full">
-                {tags.map((tag) => (
-                  <option key={tag.id} value={tag.id}>{tag.label}</option>
-                ))}
-              </select>
-            </FieldLabel>
-            <button type="button" className="mt-6 grid size-12 place-items-center rounded-2xl bg-[#f2f2f7] text-[#007aff]" onClick={onAddTag} aria-label="Add tag">
-              <Palette size={19} />
-            </button>
-          </div>
-          <FieldLabel label={editing ? "Move to calendar" : "Calendar"} helper="Choose the calendar space this event belongs to.">
-            <select
-              value={draft.calendarId ?? ""}
-              onChange={(event) => onChange({ ...draft, calendarId: event.target.value })}
-              className="input-shell w-full capitalize"
-            >
-              {writableCalendars.length === 0 && <option value="">No calendar</option>}
-              {writableCalendars.map((calendar) => (
-                <option key={calendar.id} value={calendar.id}>
-                  {calendar.name}{calendar.shared ? " (shared)" : ""}
-                </option>
-              ))}
-            </select>
-          </FieldLabel>
-          <p className="text-xs font-bold text-[#8e8e93]">
-            Move to calendar: viewers cannot move shared events. Linked tasks and reminders stay attached.
-          </p>
-          <FieldLabel label="Repeat">
-            <select
-              value={draft.recurrence}
-              onChange={(event) => {
-                const recurrence = event.target.value as Recurrence;
-                onChange({ ...draft, recurrence });
-                if (recurrence !== "none" && reminderDraft.preset === "custom") {
-                  setReminderDraft({ ...reminderDraft, preset: "10m" });
-                }
-              }}
-              className="input-shell w-full capitalize"
-            >
-              {recurrences.map((recurrence) => <option key={recurrence} value={recurrence}>{recurrence}</option>)}
-            </select>
-          </FieldLabel>
-          <FieldLabel label="Location" helper="Optional place, room, or link label.">
-            <input value={draft.location} onChange={(event) => onChange({ ...draft, location: event.target.value })} className="input-shell w-full" placeholder="Example: Library, Zoom, Home" />
-          </FieldLabel>
-          <FieldLabel label="Notes" helper="Optional details for future you.">
-            <textarea value={draft.notes} onChange={(event) => onChange({ ...draft, notes: event.target.value })} className="min-h-20 w-full resize-none rounded-2xl bg-[#f2f2f7] px-4 py-3 text-sm font-semibold outline-none" placeholder="Add notes, links, or context" />
-          </FieldLabel>
-          <div className="grid grid-cols-2 gap-3">
-            <Toggle checked={draft.allDay} label="All day" onClick={() => onChange({ ...draft, allDay: !draft.allDay })} />
-            <Toggle checked={draft.pinned} label="Pinned" onClick={() => onChange({ ...draft, pinned: !draft.pinned })} />
-          </div>
-          <div className="rounded-2xl bg-[#f2f2f7] p-3">
-            <Toggle
-              checked={reminderDraft.enabled}
-              label="Reminder"
-              onClick={() =>
-                setReminderDraft({
-                  ...reminderDraft,
-                  enabled: !reminderDraft.enabled,
-                  preset:
-                    !reminderDraft.enabled && customReminderDisabled && reminderDraft.preset === "custom"
-                      ? "10m"
-                      : reminderDraft.preset,
-                })
-              }
-            />
-            {reminderDraft.enabled && (
-              <div className="mt-3 space-y-3">
-                <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-                  {reminderPresets.map((preset) => {
-                    const disabled = preset.value === "custom" && customReminderDisabled;
-                    return (
-                      <button
-                        key={preset.value}
-                        type="button"
-                        disabled={disabled}
-                        onClick={() => setReminderDraft({ ...reminderDraft, preset: preset.value })}
-                        className={[
-                          "h-10 rounded-2xl px-2 text-xs font-black transition",
-                          reminderDraft.preset === preset.value
-                            ? "bg-[#007aff] text-white shadow-lg shadow-[#007aff]/20"
-                            : "bg-white/75 text-[#636366]",
-                          disabled ? "cursor-not-allowed opacity-45" : "active:scale-95",
-                        ].join(" ")}
-                      >
-                        {preset.label}
-                      </button>
-                    );
-                  })}
-                </div>
-                {customReminderDisabled && (
-                  <p className="text-xs font-bold text-[#8e8e93]">
-                    Custom reminder times are available for one-time events.
-                  </p>
-                )}
-                {reminderDraft.preset === "custom" && !customReminderDisabled ? (
-                  <div className="grid grid-cols-2 gap-3">
-                    <input
-                      type="date"
-                      value={reminderDraft.date}
-                      onChange={(event) => setReminderDraft({ ...reminderDraft, date: event.target.value })}
-                      className="input-shell bg-white/70"
-                    />
-                    <AppleTimePicker
-                      value={reminderDraft.time}
-                      onChange={(time) => setReminderDraft({ ...reminderDraft, time })}
-                    />
-                  </div>
-                ) : (
-                  presetReminderPreview && (
-                    <p className="rounded-2xl bg-white/70 px-3 py-2 text-xs font-bold text-[#636366]">
-                      Reminder alerts on {formatLongDate(fromDateKey(presetReminderPreview.date))} at{" "}
-                      {presetReminderPreview.time}.
-                    </p>
-                  )
-                )}
-              </div>
-            )}
-          </div>
-          {unboundTasks.length > 0 && (
-            <div className="rounded-2xl bg-[#f2f2f7] p-3">
-              <p className="mb-2 text-sm font-bold text-[#7c7c8a]">
-                Bind undone tasks
-              </p>
-              <div className="space-y-2">
-                {unboundTasks.map((task) => (
-                  <button
-                    key={task.id}
-                    type="button"
-                    onClick={() =>
-                      setSelectedTaskIds(
-                        selectedTaskIds.includes(task.id)
-                          ? selectedTaskIds.filter((id) => id !== task.id)
-                          : [...selectedTaskIds, task.id],
-                      )
+          <>
+            <div className="space-y-3">
+              <FieldLabel
+                label="Event name"
+                helper="The title shown on your calendar."
+              >
+                <input
+                  value={draft.title}
+                  onChange={(event) =>
+                    onChange({ ...draft, title: event.target.value })
+                  }
+                  className="input-shell w-full text-base"
+                  placeholder="Example: Study focus"
+                  required
+                />
+              </FieldLabel>
+              <div className="grid grid-cols-2 gap-3">
+                <FieldLabel label="Date">
+                  <input
+                    type="date"
+                    value={draft.date}
+                    onChange={(event) =>
+                      onChange({ ...draft, date: event.target.value })
                     }
-                    className="flex w-full items-center justify-between rounded-xl bg-white/70 px-3 py-2 text-left text-sm font-semibold"
-                  >
-                    {task.title}
-                    <span
-                      className={[
-                        "grid size-5 place-items-center rounded-full",
-                        selectedTaskIds.includes(task.id)
-                          ? "bg-[#34c759] text-white"
-                          : "bg-[#d1d1d6] text-transparent",
-                      ].join(" ")}
-                    >
-                      <Check size={12} />
-                    </span>
-                  </button>
-                ))}
+                    className="input-shell w-full"
+                  />
+                </FieldLabel>
+                <FieldLabel label="Time">
+                  <AppleTimePicker
+                    value={draft.time}
+                    disabled={draft.allDay}
+                    onChange={(time) => onChange({ ...draft, time })}
+                  />
+                </FieldLabel>
               </div>
+              <div className="grid grid-cols-[1fr_auto] gap-3">
+                <FieldLabel label="Tag">
+                  <select
+                    value={draft.category}
+                    onChange={(event) =>
+                      onChange({ ...draft, category: event.target.value })
+                    }
+                    className="input-shell w-full"
+                  >
+                    {tags.map((tag) => (
+                      <option key={tag.id} value={tag.id}>
+                        {tag.label}
+                      </option>
+                    ))}
+                  </select>
+                </FieldLabel>
+                <button
+                  type="button"
+                  className="mt-6 grid size-12 place-items-center rounded-2xl bg-[#f2f2f7] text-[#007aff]"
+                  onClick={onAddTag}
+                  aria-label="Add tag"
+                >
+                  <Palette size={19} />
+                </button>
+              </div>
+              <FieldLabel
+                label={editing ? "Move to calendar" : "Calendar"}
+                helper="Choose the calendar space this event belongs to."
+              >
+                <select
+                  value={draft.calendarId ?? ""}
+                  onChange={(event) =>
+                    onChange({ ...draft, calendarId: event.target.value })
+                  }
+                  className="input-shell w-full capitalize"
+                >
+                  {writableCalendars.length === 0 && (
+                    <option value="">No calendar</option>
+                  )}
+                  {writableCalendars.map((calendar) => (
+                    <option key={calendar.id} value={calendar.id}>
+                      {calendar.name}
+                      {calendar.shared ? " (shared)" : ""}
+                    </option>
+                  ))}
+                </select>
+              </FieldLabel>
+              <p className="text-xs font-bold text-[#8e8e93]">
+                Move to calendar: viewers cannot move shared events. Linked
+                tasks and reminders stay attached.
+              </p>
+              <FieldLabel label="Repeat">
+                <select
+                  value={draft.recurrence}
+                  onChange={(event) => {
+                    const recurrence = event.target.value as Recurrence;
+                    onChange({ ...draft, recurrence });
+                    if (
+                      recurrence !== "none" &&
+                      reminderDraft.preset === "custom"
+                    ) {
+                      setReminderDraft({ ...reminderDraft, preset: "10m" });
+                    }
+                  }}
+                  className="input-shell w-full capitalize"
+                >
+                  {recurrences.map((recurrence) => (
+                    <option key={recurrence} value={recurrence}>
+                      {recurrence}
+                    </option>
+                  ))}
+                </select>
+              </FieldLabel>
+              <FieldLabel
+                label="Location"
+                helper="Optional place, room, or link label."
+              >
+                <input
+                  value={draft.location}
+                  onChange={(event) =>
+                    onChange({ ...draft, location: event.target.value })
+                  }
+                  className="input-shell w-full"
+                  placeholder="Example: Library, Zoom, Home"
+                />
+              </FieldLabel>
+              <FieldLabel
+                label="Notes"
+                helper="Optional details for future you."
+              >
+                <textarea
+                  value={draft.notes}
+                  onChange={(event) =>
+                    onChange({ ...draft, notes: event.target.value })
+                  }
+                  className="min-h-20 w-full resize-none rounded-2xl bg-[#f2f2f7] px-4 py-3 text-sm font-semibold outline-none"
+                  placeholder="Add notes, links, or context"
+                />
+              </FieldLabel>
+              <div className="grid grid-cols-2 gap-3">
+                <Toggle
+                  checked={draft.allDay}
+                  label="All day"
+                  onClick={() => onChange({ ...draft, allDay: !draft.allDay })}
+                />
+                <Toggle
+                  checked={draft.pinned}
+                  label="Pinned"
+                  onClick={() => onChange({ ...draft, pinned: !draft.pinned })}
+                />
+              </div>
+              <div className="rounded-2xl bg-[#f2f2f7] p-3">
+                <Toggle
+                  checked={reminderDraft.enabled}
+                  label="Reminder"
+                  onClick={() =>
+                    setReminderDraft({
+                      ...reminderDraft,
+                      enabled: !reminderDraft.enabled,
+                      preset:
+                        !reminderDraft.enabled &&
+                        customReminderDisabled &&
+                        reminderDraft.preset === "custom"
+                          ? "10m"
+                          : reminderDraft.preset,
+                    })
+                  }
+                />
+                {reminderDraft.enabled && (
+                  <div className="mt-3 space-y-3">
+                    <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+                      {reminderPresets.map((preset) => {
+                        const disabled =
+                          preset.value === "custom" && customReminderDisabled;
+                        return (
+                          <button
+                            key={preset.value}
+                            type="button"
+                            disabled={disabled}
+                            onClick={() =>
+                              setReminderDraft({
+                                ...reminderDraft,
+                                preset: preset.value,
+                              })
+                            }
+                            className={[
+                              "h-10 rounded-2xl px-2 text-xs font-black transition",
+                              reminderDraft.preset === preset.value
+                                ? "bg-[#007aff] text-white shadow-lg shadow-[#007aff]/20"
+                                : "bg-white/75 text-[#636366]",
+                              disabled
+                                ? "cursor-not-allowed opacity-45"
+                                : "active:scale-95",
+                            ].join(" ")}
+                          >
+                            {preset.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    {customReminderDisabled && (
+                      <p className="text-xs font-bold text-[#8e8e93]">
+                        Custom reminder times are available for one-time events.
+                      </p>
+                    )}
+                    {reminderDraft.preset === "custom" &&
+                    !customReminderDisabled ? (
+                      <div className="grid grid-cols-2 gap-3">
+                        <input
+                          type="date"
+                          value={reminderDraft.date}
+                          onChange={(event) =>
+                            setReminderDraft({
+                              ...reminderDraft,
+                              date: event.target.value,
+                            })
+                          }
+                          className="input-shell bg-white/70"
+                        />
+                        <AppleTimePicker
+                          value={reminderDraft.time}
+                          onChange={(time) =>
+                            setReminderDraft({ ...reminderDraft, time })
+                          }
+                        />
+                      </div>
+                    ) : (
+                      presetReminderPreview && (
+                        <p className="rounded-2xl bg-white/70 px-3 py-2 text-xs font-bold text-[#636366]">
+                          Reminder alerts on{" "}
+                          {formatLongDate(
+                            fromDateKey(presetReminderPreview.date),
+                          )}{" "}
+                          at {presetReminderPreview.time}.
+                        </p>
+                      )
+                    )}
+                  </div>
+                )}
+              </div>
+              {unboundTasks.length > 0 && (
+                <div className="rounded-2xl bg-[#f2f2f7] p-3">
+                  <p className="mb-2 text-sm font-bold text-[#7c7c8a]">
+                    Bind undone tasks
+                  </p>
+                  <div className="space-y-2">
+                    {unboundTasks.map((task) => (
+                      <button
+                        key={task.id}
+                        type="button"
+                        onClick={() =>
+                          setSelectedTaskIds(
+                            selectedTaskIds.includes(task.id)
+                              ? selectedTaskIds.filter((id) => id !== task.id)
+                              : [...selectedTaskIds, task.id],
+                          )
+                        }
+                        className="flex w-full items-center justify-between rounded-xl bg-white/70 px-3 py-2 text-left text-sm font-semibold"
+                      >
+                        {task.title}
+                        <span
+                          className={[
+                            "grid size-5 place-items-center rounded-full",
+                            selectedTaskIds.includes(task.id)
+                              ? "bg-[#34c759] text-white"
+                              : "bg-[#d1d1d6] text-transparent",
+                          ].join(" ")}
+                        >
+                          <Check size={12} />
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
-          )}
-        </div>
-          <button disabled={submitting} className="mt-4 h-12 w-full rounded-full bg-[#007aff] text-base font-bold text-white shadow-lg shadow-[#007aff]/25 transition active:scale-95 disabled:opacity-55">
-            {submitting ? (editing ? "Saving..." : "Creating...") : editing ? "Save changes" : "Create event"}
-          </button>
-        </>
+            <button
+              disabled={submitting}
+              className="mt-4 h-12 w-full rounded-full bg-[#007aff] text-base font-bold text-white shadow-lg shadow-[#007aff]/25 transition active:scale-95 disabled:opacity-55"
+            >
+              {submitting
+                ? editing
+                  ? "Saving..."
+                  : "Creating..."
+                : editing
+                  ? "Save changes"
+                  : "Create event"}
+            </button>
+          </>
         )}
       </form>
     </ModalShell>
@@ -4561,18 +5466,39 @@ function TagModal({
 }) {
   return (
     <ModalShell>
-      <form onSubmit={onSubmit} className="w-full max-w-md rounded-[32px] border border-white/70 bg-white/90 p-4 shadow-2xl shadow-black/20 backdrop-blur-2xl">
+      <form
+        onSubmit={onSubmit}
+        className="w-full max-w-md rounded-[32px] border border-white/70 bg-white/90 p-4 shadow-2xl shadow-black/20 backdrop-blur-2xl"
+      >
         <ModalHeader title="Custom tag" onClose={onClose} />
         <div className="space-y-3">
-          <input value={draft.label} onChange={(event) => setDraft({ ...draft, label: event.target.value })} className="input-shell" placeholder="Tag name" required />
-          <input value={draft.icon} onChange={(event) => setDraft({ ...draft, icon: event.target.value })} className="input-shell" placeholder="Icon name" />
+          <input
+            value={draft.label}
+            onChange={(event) =>
+              setDraft({ ...draft, label: event.target.value })
+            }
+            className="input-shell"
+            placeholder="Tag name"
+            required
+          />
+          <input
+            value={draft.icon}
+            onChange={(event) =>
+              setDraft({ ...draft, icon: event.target.value })
+            }
+            className="input-shell"
+            placeholder="Icon name"
+          />
           <div className="grid grid-cols-6 gap-2">
             {colorGrid.map((color) => (
               <button
                 key={color}
                 type="button"
                 className="size-10 rounded-full ring-2 ring-white transition active:scale-95"
-                style={{ background: color, outline: draft.color === color ? "3px solid #1d1d1f" : "none" }}
+                style={{
+                  background: color,
+                  outline: draft.color === color ? "3px solid #1d1d1f" : "none",
+                }}
                 onClick={() => setDraft({ ...draft, color })}
                 aria-label={`Choose ${color}`}
               />
@@ -4597,8 +5523,12 @@ function AppleTimePicker({
   disabled?: boolean;
 }) {
   const [hour = "00", minute = "00"] = value.split(":");
-  const hours = Array.from({ length: 24 }, (_, index) => String(index).padStart(2, "0"));
-  const minutes = Array.from({ length: 60 }, (_, index) => String(index).padStart(2, "0"));
+  const hours = Array.from({ length: 24 }, (_, index) =>
+    String(index).padStart(2, "0"),
+  );
+  const minutes = Array.from({ length: 60 }, (_, index) =>
+    String(index).padStart(2, "0"),
+  );
 
   return (
     <div
@@ -4653,7 +5583,11 @@ function FieldLabel({
         {label}
       </span>
       {children}
-      {helper && <span className="mt-1 block text-xs font-bold text-[#8e8e93]">{helper}</span>}
+      {helper && (
+        <span className="mt-1 block text-xs font-bold text-[#8e8e93]">
+          {helper}
+        </span>
+      )}
     </label>
   );
 }
@@ -4676,13 +5610,21 @@ function CancelEventModal({
   onConfirm: () => void;
 }) {
   const repeating = event.recurrence !== "none";
-  const confirmLabel = repeating && scope === "series-delete" ? "Delete series" : "Cancel event";
+  const confirmLabel =
+    repeating && scope === "series-delete" ? "Delete series" : "Cancel event";
 
   return (
     <ModalShell>
       <div className="w-full max-w-md rounded-[32px] border border-white/70 bg-white/90 p-4 shadow-2xl shadow-black/20 backdrop-blur-2xl">
-        <ModalHeader title={event.title} eyebrow="Cancel event" onClose={onClose} />
-        <p className="text-sm font-semibold leading-6 text-[#636366]">This keeps the event in your calendar as cancelled, including the reason and cancellation time.</p>
+        <ModalHeader
+          title={event.title}
+          eyebrow="Cancel event"
+          onClose={onClose}
+        />
+        <p className="text-sm font-semibold leading-6 text-[#636366]">
+          This keeps the event in your calendar as cancelled, including the
+          reason and cancellation time.
+        </p>
         {repeating && (
           <div className="mt-4 space-y-2">
             <button
@@ -4715,10 +5657,27 @@ function CancelEventModal({
             </button>
           </div>
         )}
-        <textarea value={reason} onChange={(event) => onReasonChange(event.target.value)} className="mt-4 min-h-28 w-full resize-none rounded-2xl bg-[#f2f2f7] px-4 py-3 text-sm font-semibold outline-none" placeholder="Optional cancellation reason" />
+        <textarea
+          value={reason}
+          onChange={(event) => onReasonChange(event.target.value)}
+          className="mt-4 min-h-28 w-full resize-none rounded-2xl bg-[#f2f2f7] px-4 py-3 text-sm font-semibold outline-none"
+          placeholder="Optional cancellation reason"
+        />
         <div className="mt-4 grid grid-cols-2 gap-3">
-          <button type="button" className="h-12 rounded-full bg-[#f2f2f7] text-base font-bold" onClick={onClose}>Keep event</button>
-          <button type="button" className="h-12 rounded-full bg-[#ff3b30] text-base font-bold text-white shadow-lg shadow-[#ff3b30]/25" onClick={onConfirm}>{confirmLabel}</button>
+          <button
+            type="button"
+            className="h-12 rounded-full bg-[#f2f2f7] text-base font-bold"
+            onClick={onClose}
+          >
+            Keep event
+          </button>
+          <button
+            type="button"
+            className="h-12 rounded-full bg-[#ff3b30] text-base font-bold text-white shadow-lg shadow-[#ff3b30]/25"
+            onClick={onConfirm}
+          >
+            {confirmLabel}
+          </button>
         </div>
       </div>
     </ModalShell>
@@ -4741,18 +5700,50 @@ function RescheduleReminderModal({
   return (
     <ModalShell>
       <div className="w-full max-w-md rounded-[32px] border border-white/70 bg-white/90 p-4 shadow-2xl shadow-black/20 backdrop-blur-2xl">
-        <ModalHeader title="Create follow-up task?" eyebrow="Reschedule reminder" onClose={onClose} />
+        <ModalHeader
+          title="Create follow-up task?"
+          eyebrow="Reschedule reminder"
+          onClose={onClose}
+        />
         <p className="rounded-2xl bg-[#fff7df] px-4 py-3 text-sm font-semibold text-[#7a5200]">
           Do you want to create a reminder to reschedule this event?
-          <span className="mt-1 block text-[#1d1d1f]">Reschedule: {event.title}</span>
+          <span className="mt-1 block text-[#1d1d1f]">
+            Reschedule: {event.title}
+          </span>
         </p>
         <div className="mt-4 grid grid-cols-2 gap-3">
-          <input type="date" value={draft.date} onChange={(event) => onChange({ ...draft, date: event.target.value })} className="input-shell" />
-          <input type="time" value={draft.time} onChange={(event) => onChange({ ...draft, time: event.target.value })} className="input-shell" />
+          <input
+            type="date"
+            value={draft.date}
+            onChange={(event) =>
+              onChange({ ...draft, date: event.target.value })
+            }
+            className="input-shell"
+          />
+          <input
+            type="time"
+            value={draft.time}
+            onChange={(event) =>
+              onChange({ ...draft, time: event.target.value })
+            }
+            className="input-shell"
+          />
         </div>
         <div className="mt-4 grid grid-cols-2 gap-3">
-          <button type="button" className="h-12 rounded-full bg-[#f2f2f7] text-base font-bold" onClick={onClose}>Not now</button>
-          <button type="button" className="h-12 rounded-full bg-[#007aff] text-base font-bold text-white shadow-lg shadow-[#007aff]/25" onClick={onCreate}>Create reminder</button>
+          <button
+            type="button"
+            className="h-12 rounded-full bg-[#f2f2f7] text-base font-bold"
+            onClick={onClose}
+          >
+            Not now
+          </button>
+          <button
+            type="button"
+            className="h-12 rounded-full bg-[#007aff] text-base font-bold text-white shadow-lg shadow-[#007aff]/25"
+            onClick={onCreate}
+          >
+            Create reminder
+          </button>
         </div>
       </div>
     </ModalShell>
@@ -4780,14 +5771,20 @@ function ConfirmModal({
         <ModalHeader title={title} eyebrow="Please confirm" onClose={onClose} />
         <p className="text-sm font-semibold leading-6 text-[#636366]">{body}</p>
         <div className="mt-4 grid grid-cols-2 gap-3">
-          <button type="button" className="h-12 rounded-full bg-[#f2f2f7] text-base font-bold" onClick={onClose}>
+          <button
+            type="button"
+            className="h-12 rounded-full bg-[#f2f2f7] text-base font-bold"
+            onClick={onClose}
+          >
             Keep it
           </button>
           <button
             type="button"
             className={[
               "h-12 rounded-full text-base font-bold text-white shadow-lg",
-              danger ? "bg-[#ff3b30] shadow-[#ff3b30]/25" : "bg-[#007aff] shadow-[#007aff]/25",
+              danger
+                ? "bg-[#ff3b30] shadow-[#ff3b30]/25"
+                : "bg-[#007aff] shadow-[#007aff]/25",
             ].join(" ")}
             onClick={onConfirm}
           >
@@ -4813,9 +5810,14 @@ function DeleteAccountModal({
   return (
     <ModalShell>
       <div className="w-full max-w-md rounded-[32px] border border-white/70 bg-white/92 p-4 shadow-2xl shadow-black/20 backdrop-blur-2xl">
-        <ModalHeader title="Are you sure you want to delete your account?" eyebrow="Danger Zone" onClose={onClose} />
+        <ModalHeader
+          title="Are you sure you want to delete your account?"
+          eyebrow="Danger Zone"
+          onClose={onClose}
+        />
         <p className="text-sm font-semibold leading-6 text-[#636366]">
-          This is intentionally blocked until Supabase Auth admin deletion is configured. Type DELETE to test the confirmation flow.
+          This is intentionally blocked until Supabase Auth admin deletion is
+          configured. Type DELETE to test the confirmation flow.
         </p>
         <input
           value={value}
@@ -4824,7 +5826,11 @@ function DeleteAccountModal({
           placeholder="Type DELETE"
         />
         <div className="mt-4 grid grid-cols-2 gap-3">
-          <button type="button" className="h-12 rounded-full bg-[#f2f2f7] text-base font-bold" onClick={onClose}>
+          <button
+            type="button"
+            className="h-12 rounded-full bg-[#f2f2f7] text-base font-bold"
+            onClick={onClose}
+          >
             Cancel
           </button>
           <button
@@ -4851,33 +5857,55 @@ function DesktopPanel({
   selectedDate: Date;
   events: CalendarEvent[];
   reminders: RescheduleReminder[];
-  tasks: Array<{ id: string; title: string; done: boolean; eventTitle: string }>;
+  tasks: Array<{
+    id: string;
+    title: string;
+    done: boolean;
+    eventTitle: string;
+  }>;
   alerts: RescheduleReminder[];
 }) {
   return (
     <>
       <section className="rounded-[36px] border border-white/55 bg-white/58 p-6 shadow-2xl shadow-[#6d5dfc]/10 backdrop-blur-3xl">
         <p className="text-sm font-bold text-[#8e8e93]">Desktop overview</p>
-        <h2 className="mt-1 text-3xl font-semibold">{formatLongDate(selectedDate)}</h2>
+        <h2 className="mt-1 text-3xl font-semibold">
+          {formatLongDate(selectedDate)}
+        </h2>
         <div className="mt-5 grid grid-cols-3 gap-3">
           <Stat label="Events" value={events.length} />
-          <Stat label="Tasks" value={tasks.filter((task) => !task.done).length} />
+          <Stat
+            label="Tasks"
+            value={tasks.filter((task) => !task.done).length}
+          />
           <Stat label="Alerts" value={alerts.length + reminders.length} />
         </div>
       </section>
       <section className="overflow-y-auto rounded-[36px] border border-white/55 bg-white/58 p-6 pb-10 shadow-2xl shadow-[#6d5dfc]/10 backdrop-blur-3xl">
-        <SectionTitle eyebrow="Planner" title="Selected day at a glance" count={events.length} />
+        <SectionTitle
+          eyebrow="Planner"
+          title="Selected day at a glance"
+          count={events.length}
+        />
         <div className="grid grid-cols-2 gap-4">
           {events.map((event) => (
-            <article key={event.id} className="rounded-[24px] bg-white/70 p-4 shadow-lg shadow-black/5">
+            <article
+              key={event.id}
+              className="rounded-[24px] bg-white/70 p-4 shadow-lg shadow-black/5"
+            >
               <h3 className="text-base font-semibold">{event.title}</h3>
-              <p className="mt-1 text-sm font-semibold text-[#8e8e93]">{event.time} · {event.location}</p>
+              <p className="mt-1 text-sm font-semibold text-[#8e8e93]">
+                {event.time} · {event.location}
+              </p>
               {event.tasks.filter((task) => !task.done).length > 0 && (
                 <div className="mt-3 space-y-1">
                   {event.tasks
                     .filter((task) => !task.done)
                     .map((task) => (
-                      <p key={task.id} className="text-sm font-semibold text-[#636366]">
+                      <p
+                        key={task.id}
+                        className="text-sm font-semibold text-[#636366]"
+                      >
                         • {task.title}
                       </p>
                     ))}
@@ -4912,9 +5940,15 @@ function BottomTabs({
           <button
             key={item.id}
             onClick={() => setActiveTab(item.id)}
-            className={["flex h-14 flex-col items-center justify-center gap-1 rounded-2xl transition active:scale-95", activeTab === item.id ? "text-[#007aff]" : "text-[#8e8e93]"].join(" ")}
+            className={[
+              "flex h-14 flex-col items-center justify-center gap-1 rounded-2xl transition active:scale-95",
+              activeTab === item.id ? "text-[#007aff]" : "text-[#8e8e93]",
+            ].join(" ")}
           >
-            <item.icon size={22} strokeWidth={activeTab === item.id ? 2.5 : 2.1} />
+            <item.icon
+              size={22}
+              strokeWidth={activeTab === item.id ? 2.5 : 2.1}
+            />
             <span>{item.label}</span>
           </button>
         ))}
@@ -4932,21 +5966,33 @@ function ReminderCard({ reminder }: { reminder: RescheduleReminder }) {
         </span>
         <div className="min-w-0">
           <h4 className="truncate text-base font-semibold">{reminder.title}</h4>
-          <p className="text-sm font-semibold text-[#7c7c8a]">{reminder.date} at {reminder.time}</p>
+          <p className="text-sm font-semibold text-[#7c7c8a]">
+            {reminder.date} at {reminder.time}
+          </p>
         </div>
       </div>
     </article>
   );
 }
 
-function SectionTitle({ eyebrow, title, count }: { eyebrow: string; title: string; count: number }) {
+function SectionTitle({
+  eyebrow,
+  title,
+  count,
+}: {
+  eyebrow: string;
+  title: string;
+  count: number;
+}) {
   return (
     <div className="mb-4 flex items-center justify-between">
       <div>
         <p className="text-sm font-bold text-[#8e8e93]">{eyebrow}</p>
         <h2 className="text-2xl font-semibold tracking-normal">{title}</h2>
       </div>
-      <span className="rounded-full bg-white/70 px-3 py-1 text-sm font-bold text-[#007aff] shadow-sm">{count}</span>
+      <span className="rounded-full bg-white/70 px-3 py-1 text-sm font-bold text-[#007aff] shadow-sm">
+        {count}
+      </span>
     </div>
   );
 }
@@ -4970,9 +6016,26 @@ function Chip({ icon, text }: { icon: React.ReactNode; text: string }) {
   );
 }
 
-function IconButton({ children, label, onClick, danger }: { children: React.ReactNode; label: string; onClick: () => void; danger?: boolean }) {
+function IconButton({
+  children,
+  label,
+  onClick,
+  danger,
+}: {
+  children: React.ReactNode;
+  label: string;
+  onClick: () => void;
+  danger?: boolean;
+}) {
   return (
-    <button className={["grid size-8 place-items-center rounded-full bg-white/75 transition active:scale-95", danger ? "text-[#ff3b30]" : "text-[#007aff]"].join(" ")} onClick={onClick} aria-label={label}>
+    <button
+      className={[
+        "grid size-8 place-items-center rounded-full bg-white/75 transition active:scale-95",
+        danger ? "text-[#ff3b30]" : "text-[#007aff]",
+      ].join(" ")}
+      onClick={onClick}
+      aria-label={label}
+    >
       {children}
     </button>
   );
@@ -5011,7 +6074,9 @@ function SettingsCard({
       id={id}
       className={[
         "rounded-[24px] border p-3 shadow-lg shadow-black/5 backdrop-blur-xl transition",
-        open ? "border-[#007aff]/25 bg-white/76" : "border-white/60 bg-white/52",
+        open
+          ? "border-[#007aff]/25 bg-white/76"
+          : "border-white/60 bg-white/52",
       ].join(" ")}
     >
       <button
@@ -5032,11 +6097,21 @@ function SettingsCard({
   );
 }
 
-function PlaceholderRow({ title, danger }: { title: string; danger?: boolean }) {
+function PlaceholderRow({
+  title,
+  danger,
+}: {
+  title: string;
+  danger?: boolean;
+}) {
   return (
     <div className="mt-2 flex items-center justify-between rounded-2xl bg-[#f2f2f7] px-3 py-2 text-sm font-bold">
-      <span className={danger ? "text-[#ff3b30]" : "text-[#636366]"}>{title}</span>
-      <span className="rounded-full bg-white px-2 py-1 text-[11px] text-[#8e8e93]">Coming soon</span>
+      <span className={danger ? "text-[#ff3b30]" : "text-[#636366]"}>
+        {title}
+      </span>
+      <span className="rounded-full bg-white px-2 py-1 text-[11px] text-[#8e8e93]">
+        Coming soon
+      </span>
     </div>
   );
 }
@@ -5051,29 +6126,70 @@ function PlanCard({ title, body }: { title: string; body: string }) {
 }
 
 function ModalShell({ children }: { children: React.ReactNode }) {
-  return <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/25 px-3 pb-3 backdrop-blur-sm">{children}</div>;
+  return (
+    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/25 px-3 pb-3 backdrop-blur-sm">
+      {children}
+    </div>
+  );
 }
 
-function ModalHeader({ title, eyebrow, onClose }: { title: string; eyebrow?: string; onClose: () => void }) {
+function ModalHeader({
+  title,
+  eyebrow,
+  onClose,
+}: {
+  title: string;
+  eyebrow?: string;
+  onClose: () => void;
+}) {
   return (
     <div className="mb-4 flex items-center justify-between">
       <div>
-        {eyebrow && <p className="text-sm font-bold text-[#8e8e93]">{eyebrow}</p>}
+        {eyebrow && (
+          <p className="text-sm font-bold text-[#8e8e93]">{eyebrow}</p>
+        )}
         <h2 className="text-xl font-semibold">{title}</h2>
       </div>
-      <button type="button" className="grid size-9 place-items-center rounded-full bg-[#f2f2f7] text-[#636366]" onClick={onClose} aria-label="Close">
+      <button
+        type="button"
+        className="grid size-9 place-items-center rounded-full bg-[#f2f2f7] text-[#636366]"
+        onClick={onClose}
+        aria-label="Close"
+      >
         <X size={19} />
       </button>
     </div>
   );
 }
 
-function Toggle({ checked, label, onClick }: { checked: boolean; label: string; onClick: () => void }) {
+function Toggle({
+  checked,
+  label,
+  onClick,
+}: {
+  checked: boolean;
+  label: string;
+  onClick: () => void;
+}) {
   return (
-    <button type="button" onClick={onClick} className="flex h-12 items-center justify-between rounded-2xl bg-[#f2f2f7] px-3 text-sm font-bold">
+    <button
+      type="button"
+      onClick={onClick}
+      className="flex h-12 items-center justify-between rounded-2xl bg-[#f2f2f7] px-3 text-sm font-bold"
+    >
       {label}
-      <span className={["flex h-7 w-12 items-center rounded-full p-0.5 transition", checked ? "bg-[#34c759]" : "bg-[#c7c7cc]"].join(" ")}>
-        <span className={["size-6 rounded-full bg-white shadow-sm transition", checked ? "translate-x-5" : "translate-x-0"].join(" ")} />
+      <span
+        className={[
+          "flex h-7 w-12 items-center rounded-full p-0.5 transition",
+          checked ? "bg-[#34c759]" : "bg-[#c7c7cc]",
+        ].join(" ")}
+      >
+        <span
+          className={[
+            "size-6 rounded-full bg-white shadow-sm transition",
+            checked ? "translate-x-5" : "translate-x-0",
+          ].join(" ")}
+        />
       </span>
     </button>
   );

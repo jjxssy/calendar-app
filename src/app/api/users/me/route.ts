@@ -1,6 +1,9 @@
 import { ApiError, fail, ok, readBody, requireUser, stringValue } from "@/lib/api-helpers";
 import { prisma } from "@/lib/prisma";
 
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
 function normalizeTheme(value: unknown) {
   if (value === "light" || value === "dark" || value === "system") return value;
   if (value === "white") return "light";

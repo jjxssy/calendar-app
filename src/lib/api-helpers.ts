@@ -112,16 +112,28 @@ export async function requireUser() {
 }
 
 export async function ensureEvent(userId: string, eventId: string) {
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { id: true, email: true },
+  });
+
+  if (!user) throw new ApiError("You must be signed in.", 401);
+
   const event = await prisma.event.findFirst({
     where: {
       id: eventId,
       OR: [
-        { userId },
-        { calendar: { members: { some: { userId, status: "accepted" } } } },
+        { userId: user.id },
+        { user: { email: user.email } },
+        { calendar: { ownerId: user.id } },
+        { calendar: { owner: { email: user.email } } },
+        { calendar: { members: { some: { userId: user.id, status: "accepted" } } } },
+        { calendar: { members: { some: { email: user.email } } } },
       ],
     },
-    include: { calendar: { include: { members: true } } },
+    include: { calendar: { include: { members: true, owner: true } } },
   });
+
   if (!event) throw new ApiError("Event not found.", 404);
   return event;
 }
