@@ -420,8 +420,8 @@ async function apiJson<T>(url: string, init?: RequestInit) {
   const token =
     typeof window === "undefined"
       ? undefined
-      : (await createClient().auth.getSession()).data.session?.access_token ??
-        readSession()?.accessToken;
+      : ((await createClient().auth.getSession()).data.session?.access_token ??
+        readSession()?.accessToken);
 
   const method = init?.method?.toUpperCase() ?? "GET";
   const requestUrl =
@@ -807,10 +807,13 @@ export default function CalendarDashboard() {
   const alertItemsRef = useRef<RescheduleReminder[]>([]);
   const workspaceMutationVersion = useRef(0);
   const workspaceLoadVersion = useRef(0);
+  const visitedSettingsRef = useRef(false);
+  const previousTabRef = useRef<AppTab>("calendar");
   const [session, setSession] = useState<AppSession | null>(() =>
     readSession(),
   );
   const [settingsLoaded, setSettingsLoaded] = useState(false);
+  const [workspaceReady, setWorkspaceReady] = useState(false);
   const isAuthed = Boolean(session);
   const initialData = useMemo(() => readCalendarData(today), [today]);
   const [visibleMonth, setVisibleMonth] = useState(startOfMonth(today));
@@ -821,45 +824,41 @@ export default function CalendarDashboard() {
   const [activeSettingsSection, setActiveSettingsSection] =
     useState<SettingsSectionId>("profile");
   const [query, setQuery] = useState("");
-  const [tags, setTags] = useState<CategoryStyle[]>(() => initialData.tags);
-  const [calendars, setCalendars] = useState<AppCalendar[]>(
-    () => initialData.calendars,
+  const [tags, setTags] = useState<CategoryStyle[]>([]);
+  const [calendars, setCalendars] = useState<AppCalendar[]>([]);
+  const [events, setEvents] = useState<CalendarEvent[]>([]);
+  const [savedSettings, setSavedSettings] = useState<AppSettings>(() => ({
+    ...defaultSettings,
+    theme: "light",
+  }));
+  const [settings, setSettings] = useState<AppSettings>(() => ({
+    ...defaultSettings,
+    theme: "light",
+  }));
+  const [eventReminders, setEventReminders] = useState<RescheduleReminder[]>(
+    [],
   );
+  const [standaloneTasks, setStandaloneTasks] = useState<StandaloneTask[]>([]);
   const [activeCategory, setActiveCategory] = useState<string | "all">("all");
-  const [events, setEvents] = useState(() => initialData.events);
-  const [savedSettings, setSavedSettings] = useState<AppSettings>(
-    () => initialData.settings,
-  );
-  const [settings, setSettings] = useState<AppSettings>(
-    () => initialData.settings,
-  );
   const [calendarDraft, setCalendarDraft] = useState({
     name: "",
     color: "#007aff",
   });
   const [memberDraft, setMemberDraft] = useState({
-    calendarId: "work",
+    calendarId: "",
     email: "",
     role: "viewer" as "editor" | "viewer",
   });
   const [shareDrafts, setShareDrafts] = useState<Record<string, string>>({});
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [draft, setDraft] = useState<EventDraft>(() =>
-    emptyDraft(today, "hobby"),
-  );
+  const [draft, setDraft] = useState<EventDraft>(() => emptyDraft(today, ""));
   const [eventReminderDraft, setEventReminderDraft] = useState<ReminderDraft>({
     enabled: false,
     preset: "10m",
     date: toDateKey(today),
     time: currentTimeValue(today),
   });
-  const [eventReminders, setEventReminders] = useState<RescheduleReminder[]>(
-    () => initialData.eventReminders,
-  );
   const [composerKind, setComposerKind] = useState<ComposerKind>("event");
-  const [standaloneTasks, setStandaloneTasks] = useState<StandaloneTask[]>(
-    () => initialData.standaloneTasks,
-  );
   const [selectedTaskIds, setSelectedTaskIds] = useState<string[]>([]);
   const [taskDraft, setTaskDraft] = useState<TaskDraft>({
     title: "",
@@ -1187,6 +1186,7 @@ export default function CalendarDashboard() {
     if (showLoading) setWorkspaceLoading(true);
     setWorkspaceMessage("");
     try {
+      setWorkspaceReady(false);
       const [
         userPayload,
         calendarPayload,
@@ -1207,15 +1207,14 @@ export default function CalendarDashboard() {
         apiJson<{ preferences: DbNotificationPreferences }>(
           "/api/settings/notifications",
         ),
-      ]
-    );
-    console.log("LOAD WORKSPACE RESULT:", {
-  userTheme: userPayload.user.theme,
-  calendarCount: calendarPayload.calendars.length,
-  eventCount: eventPayload.events.length,
-  eventDates: eventPayload.events.map((event) => event.startDate),
-  eventTitles: eventPayload.events.map((event) => event.title),
-});
+      ]);
+      console.log("LOAD WORKSPACE RESULT:", {
+        userTheme: userPayload.user.theme,
+        calendarCount: calendarPayload.calendars.length,
+        eventCount: eventPayload.events.length,
+        eventDates: eventPayload.events.map((event) => event.startDate),
+        eventTitles: eventPayload.events.map((event) => event.title),
+      });
       const accessToken =
         (await createClient().auth.getSession()).data.session?.access_token ??
         readSession()?.accessToken;
@@ -1284,6 +1283,9 @@ export default function CalendarDashboard() {
           .filter(([, value]) => value),
       ) as Record<string, string>;
       const loadedTheme = normalizeTheme(userPayload.user.theme);
+      if (typeof window !== "undefined") {
+        window.localStorage.setItem(THEME_STORAGE_KEY, loadedTheme);
+      }
       const preferences = preferencePayload.preferences;
       const mappedSettings = mapPreferencesToSettings(
         preferences,
@@ -1308,36 +1310,45 @@ export default function CalendarDashboard() {
       setTags(loadedCategories.map(mapCategory));
       const mappedEvents = eventPayload.events.map(mapEvent);
 
-console.log("MAPPED EVENTS FROM LOAD WORKSPACE:", {
-  rawCount: eventPayload.events.length,
-  mappedCount: mappedEvents.length,
-  rawDates: eventPayload.events.map((event) => event.startDate),
-  mappedDates: mappedEvents.map((event) => event.date),
-  titles: mappedEvents.map((event) => event.title),
-});
+      console.log("MAPPED EVENTS FROM LOAD WORKSPACE:", {
+        rawCount: eventPayload.events.length,
+        mappedCount: mappedEvents.length,
+        rawDates: eventPayload.events.map((event) => event.startDate),
+        mappedDates: mappedEvents.map((event) => event.date),
+        titles: mappedEvents.map((event) => event.title),
+      });
 
-setEvents(mappedEvents);
+      setEvents(mappedEvents);
 
-const todayKey = toDateKey(today);
-const todayHasEvents = mappedEvents.some(
-  (event) => event.date === todayKey && event.status !== "archived",
-);
+      const todayKey = toDateKey(today);
+      const todayHasEvents = mappedEvents.some(
+        (event) => event.date === todayKey && event.status !== "archived",
+      );
 
-if (todayHasEvents) {
-  setSelectedDate(today);
-  setVisibleMonth(startOfMonth(today));
-} else {
-  const firstUpcomingEvent = mappedEvents
-    .filter((event) => event.status !== "archived")
-    .sort((a, b) => a.date.localeCompare(b.date))[0];
+      if (todayHasEvents) {
+        setSelectedDate(today);
+        setVisibleMonth(startOfMonth(today));
+      } else {
+        const firstUpcomingEvent = mappedEvents
+          .filter((event) => event.status !== "archived")
+          .sort((a, b) => a.date.localeCompare(b.date))[0];
 
-  if (firstUpcomingEvent) {
-    const eventDate = fromDateKey(firstUpcomingEvent.date);
-    setSelectedDate(eventDate);
-    setVisibleMonth(startOfMonth(eventDate));
-  }
-}
+        if (firstUpcomingEvent) {
+          const eventDate = fromDateKey(firstUpcomingEvent.date);
+          setSelectedDate(eventDate);
+          setVisibleMonth(startOfMonth(eventDate));
+        }
+      }
       setActiveCategory("all");
+      setDraft((current) => ({
+        ...current,
+        category: current.category || loadedCategories[0]?.id || "",
+        calendarId: current.calendarId || mappedCalendars[0]?.id || "",
+      }));
+      setMemberDraft((current) => ({
+        ...current,
+        calendarId: current.calendarId || mappedCalendars[0]?.id || "",
+      }));
       setEventReminders(
         reminderPayload.reminders
           .filter((reminder) => !reminder.eventId)
@@ -1352,10 +1363,7 @@ if (todayHasEvents) {
       setSettings(mappedSettings);
       setSettingsLoaded(true);
       applyDocumentTheme(mappedSettings.theme, true);
-      setMemberDraft((current) => ({
-        ...current,
-        calendarId: mappedCalendars[0]?.id ?? current.calendarId,
-      }));
+      setWorkspaceReady(true);
       setWorkspaceMessage(
         options.message ?? "Workspace loaded from your account.",
       );
@@ -1369,6 +1377,7 @@ if (todayHasEvents) {
       clearSession();
       setSession(null);
       setSettingsLoaded(false);
+      setWorkspaceReady(true);
       setWorkspaceMessage(
         error instanceof Error ? error.message : "Could not load workspace.",
       );
@@ -1490,6 +1499,7 @@ if (todayHasEvents) {
           : "This device is not subscribed for Web Push yet.",
       );
     } catch (error) {
+      setWorkspaceReady(true);
       setPushStatus(
         error instanceof Error ? error.message : "Could not check push status.",
       );
@@ -1622,7 +1632,7 @@ if (todayHasEvents) {
 
   useEffect(() => {
     const applyTheme = () => {
-      applyDocumentTheme(settings.theme);
+      applyDocumentTheme(settings.theme, true);
     };
 
     applyTheme();
@@ -1647,22 +1657,52 @@ if (todayHasEvents) {
 
   function revertUnsavedSettings() {
     setSettings(savedSettings);
-    applyDocumentTheme(savedSettings.theme);
+    applyDocumentTheme(savedSettings.theme, true);
     setSettingsMessage("");
     setSettingsError("");
   }
 
   useEffect(() => {
+    const previousTab = previousTabRef.current;
+
+    if (activeTab === "settings") {
+      visitedSettingsRef.current = true;
+    }
+
+    if (
+      settingsLoaded &&
+      visitedSettingsRef.current &&
+      previousTab === "settings" &&
+      activeTab !== "settings"
+    ) {
+      const timer = window.setTimeout(() => {
+        revertUnsavedSettings();
+      }, 0);
+
+      previousTabRef.current = activeTab;
+      return () => window.clearTimeout(timer);
+    }
+
+    previousTabRef.current = activeTab;
+  }, [activeTab, settingsLoaded]);
+
+  useEffect(() => {
     const onVisibilityChange = () => {
-      if (document.visibilityState === "hidden" && activeTab === "settings") {
+      if (
+        settingsLoaded &&
+        document.visibilityState === "hidden" &&
+        activeTab === "settings"
+      ) {
         revertUnsavedSettings();
       }
     };
+
     document.addEventListener("visibilitychange", onVisibilityChange);
-    return () =>
+
+    return () => {
       document.removeEventListener("visibilitychange", onVisibilityChange);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTab, savedSettings]);
+    };
+  }, [activeTab, settingsLoaded, savedSettings]);
 
   useEffect(() => {
     if (!isAuthed) return;
@@ -1798,7 +1838,7 @@ if (todayHasEvents) {
     const now = new Date();
     setComposerKind("event");
     setDraft({
-      ...emptyDraft(selectedDate, tags[0]?.id ?? "hobby"),
+      ...emptyDraft(selectedDate, tags[0]?.id ?? ""),
       calendarId:
         calendars.find((calendar) => calendar.visible)?.id ??
         calendars[0]?.id ??
@@ -2805,7 +2845,7 @@ if (todayHasEvents) {
           ),
         })),
       );
-      applyDocumentTheme(nextSettings.theme);
+      applyDocumentTheme(nextSettings.theme, true);
       setSettingsMessage(
         "Profile saved. Theme saved. Notifications saved. AI settings saved.",
       );
@@ -2920,14 +2960,27 @@ if (todayHasEvents) {
     }
   }
 
+  if (isAuthed && !workspaceReady) {
+    return (
+      <main className="grid min-h-dvh place-items-center bg-[#f6f4ff] px-6 text-[#1d1d1f]">
+        <section className="w-full max-w-sm rounded-[32px] border border-white/70 bg-white/80 p-6 text-center shadow-xl shadow-black/5 backdrop-blur-xl">
+          <div className="mx-auto grid size-14 place-items-center rounded-3xl bg-[#007aff] text-white shadow-lg shadow-[#007aff]/25">
+            <CalendarDays size={26} />
+          </div>
+          <h1 className="mt-4 text-2xl font-black">Loading Arcgenda</h1>
+          <p className="mt-2 text-sm font-semibold text-[#636366]">
+            Fetching your calendars, events, tasks, and theme from the database.
+          </p>
+          <div className="mt-5 h-2 overflow-hidden rounded-full bg-[#e5e5ea]">
+            <div className="h-full w-1/2 animate-pulse rounded-full bg-[#007aff]" />
+          </div>
+        </section>
+      </main>
+    );
+  }
+
   return (
     <main className="arcgenda-app h-dvh overflow-hidden bg-[var(--background)] text-[var(--foreground)]">
-      <div className="fixed left-2 top-2 z-[9999] max-w-[340px] rounded-2xl bg-black/80 p-3 text-xs font-bold text-white">
-  <p>Events in state: {events.length}</p>
-  <p>Filtered events: {filteredEvents.length}</p>
-  <p>Selected date: {selectedKey}</p>
-  <p>Event dates: {[...new Set(events.map((event) => event.date))].join(", ")}</p>
-</div>
       <div className="pointer-events-none fixed inset-0 overflow-hidden">
         <div className="absolute -left-24 top-[-80px] size-72 rounded-full bg-[#ff9bd2]/50 blur-3xl" />
         <div className="absolute right-[-90px] top-28 size-72 rounded-full bg-[#7dd3fc]/55 blur-3xl" />
