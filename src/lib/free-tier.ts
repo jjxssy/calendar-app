@@ -7,7 +7,14 @@ export type AppCalendar = {
   visible: boolean;
   shared: boolean;
   role: "owner" | "editor" | "viewer";
-  members: Array<{ id: string; userId?: string | null; email: string; displayName?: string; role: "owner" | "editor" | "viewer"; status: "pending" | "accepted" }>;
+  members: Array<{
+    id: string;
+    userId?: string | null;
+    email: string;
+    displayName?: string;
+    role: "owner" | "editor" | "viewer";
+    status: "pending" | "accepted";
+  }>;
 };
 
 export type NotificationSettings = {
@@ -37,6 +44,7 @@ export type AiSettings = {
 
 export type AppSettings = {
   theme: "system" | "light" | "dark";
+  skipIntro: boolean;
   profile: {
     accountName: string;
     calendarDisplayNames: Record<string, string>;
@@ -59,6 +67,7 @@ export type CalendarStats = {
 
 export const defaultSettings: AppSettings = {
   theme: "system",
+  skipIntro: false,
   profile: {
     accountName: "",
     calendarDisplayNames: {},
@@ -101,7 +110,9 @@ export function computeStats(
     (event) => event.status === "scheduled" && event.date >= nowKey,
   ).length;
   const completedTasks = tasks.filter((task) => task.done).length;
-  const taskCompletionRate = tasks.length ? Math.round((completedTasks / tasks.length) * 100) : 0;
+  const taskCompletionRate = tasks.length
+    ? Math.round((completedTasks / tasks.length) * 100)
+    : 0;
   const categoryCounts = events.reduce<Record<string, number>>((counts, event) => {
     counts[event.category] = (counts[event.category] ?? 0) + 1;
     return counts;
@@ -111,11 +122,14 @@ export function computeStats(
   const mostUsedCategory =
     tags.find((tag) => tag.id === mostUsedCategoryId)?.label ?? "No category yet";
   const dayCounts = events.reduce<Record<string, number>>((counts, event) => {
-    const day = new Date(`${event.date}T12:00`).toLocaleDateString("en", { weekday: "long" });
+    const day = new Date(`${event.date}T12:00`).toLocaleDateString("en", {
+      weekday: "long",
+    });
     counts[day] = (counts[day] ?? 0) + 1;
     return counts;
   }, {});
-  const mostActiveDay = Object.entries(dayCounts).sort((a, b) => b[1] - a[1])[0]?.[0] ?? "No pattern yet";
+  const mostActiveDay =
+    Object.entries(dayCounts).sort((a, b) => b[1] - a[1])[0]?.[0] ?? "No pattern yet";
 
   return {
     totalEvents,

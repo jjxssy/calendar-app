@@ -1,37 +1,43 @@
 "use client";
 
 import dynamic from "next/dynamic";
+import { CalendarDays } from "lucide-react";
 
-const CalendarDashboard = dynamic(() => import("@/components/calendar-dashboard"), {
-  ssr: false,
-  loading: () => (
-    <main className="min-h-dvh bg-[#f6f4ff] px-4 py-4 text-[#18181b] md:px-6">
-      <section className="mx-auto grid min-h-[calc(100dvh-2rem)] max-w-7xl gap-4 rounded-[28px] border border-white/70 bg-white/72 p-4 shadow-xl shadow-black/5 md:grid-cols-[260px_1fr]">
-        <aside className="hidden rounded-[24px] bg-white/70 p-4 md:block">
-          <div className="h-10 w-32 rounded-full bg-[#e5e5ea]" />
-          <div className="mt-8 space-y-3">
-            {[0, 1, 2, 3, 4].map((item) => (
-              <div key={item} className="h-10 rounded-2xl bg-[#f2f2f7]" />
-            ))}
-          </div>
-        </aside>
-        <div className="rounded-[24px] bg-white/70 p-4">
-          <div className="flex items-center justify-between gap-4">
-            <div>
-              <div className="h-4 w-24 rounded-full bg-[#e5e5ea]" />
-              <div className="mt-3 h-8 w-48 rounded-full bg-[#dfe9ff]" />
-            </div>
-            <div className="h-11 w-28 rounded-full bg-[#007aff]/20" />
-          </div>
-          <div className="mt-6 grid grid-cols-7 gap-2">
-            {Array.from({ length: 35 }, (_, index) => (
-              <div key={index} className="aspect-square rounded-2xl bg-[#f2f2f7]" />
-            ))}
-          </div>
+function MinimalCalendarLoading() {
+  return (
+    <main className="grid min-h-dvh place-items-center bg-[var(--background)] px-6 text-[var(--foreground)]">
+      <section className="flex w-full max-w-xs flex-col items-center rounded-[28px] border border-[var(--border-soft)] bg-[var(--surface)] px-6 py-7 text-center shadow-xl shadow-[var(--shadow-soft)] backdrop-blur-2xl">
+        <div className="grid size-12 place-items-center rounded-2xl bg-[var(--accent)] text-white shadow-lg shadow-[var(--shadow-soft)]">
+          <CalendarDays size={23} />
+        </div>
+
+        <div className="mt-5 flex items-center gap-2">
+          <span className="size-2 animate-pulse rounded-full bg-[var(--accent)]" />
+          <p className="text-xs font-black uppercase tracking-[0.18em] text-[var(--muted)]">
+            Loading
+          </p>
+        </div>
+
+        <h1 className="mt-2 text-2xl font-black tracking-tight text-[var(--foreground)]">
+          Opening Arcgenda
+        </h1>
+        <p className="mt-2 max-w-[230px] text-sm font-semibold leading-6 text-[var(--muted)]">
+          Checking your session and preparing your workspace.
+        </p>
+
+        <div className="mt-6 flex items-center justify-center gap-1.5" aria-label="Loading">
+          <span className="size-2 animate-bounce rounded-full bg-[var(--accent)]" />
+          <span className="size-2 animate-bounce rounded-full bg-[var(--accent)] [animation-delay:120ms]" />
+          <span className="size-2 animate-bounce rounded-full bg-[var(--accent)] [animation-delay:240ms]" />
         </div>
       </section>
     </main>
-  ),
+  );
+}
+
+const CalendarDashboard = dynamic(() => import("@/components/calendar-dashboard"), {
+  ssr: false,
+  loading: () => <MinimalCalendarLoading />,
 });
 
 export function CalendarDashboardLoader() {

@@ -27,10 +27,11 @@ import {
   Users,
   X,
 } from "lucide-react";
-import { useRouter } from "next/navigation";
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
-import { AppSession, clearSession, readSession, saveSession } from "@/lib/api";
+import { useRouter } from "next/navigation";
+import { AppSession, clearSession, logout, readSession, saveSession } from "@/lib/api";
 import { createClient } from "@/utils/supabase/client";
+
 import {
   CalendarView,
   addDays,
@@ -588,10 +589,12 @@ function mapPreferencesToSettings(
   baseSettings: AppSettings,
   profile: AppSettings["profile"],
   theme: AppSettings["theme"],
+  skipIntro: boolean,
 ): AppSettings {
   return {
     ...baseSettings,
     theme,
+    skipIntro,
     profile,
     notifications: {
       eventReminders: preferences.eventReminders,
@@ -830,10 +833,12 @@ export default function CalendarDashboard() {
   const [savedSettings, setSavedSettings] = useState<AppSettings>(() => ({
     ...defaultSettings,
     theme: "light",
+    skipIntro: false,
   }));
   const [settings, setSettings] = useState<AppSettings>(() => ({
     ...defaultSettings,
     theme: "light",
+    skipIntro: false,
   }));
   const [eventReminders, setEventReminders] = useState<RescheduleReminder[]>(
     [],
@@ -914,6 +919,8 @@ export default function CalendarDashboard() {
     useState<AppCalendar | null>(null);
   const [deleteAccountOpen, setDeleteAccountOpen] = useState(false);
   const [deleteAccountText, setDeleteAccountText] = useState("");
+  const [introOpen, setIntroOpen] = useState(false);
+  const [introSaving, setIntroSaving] = useState(false);
 
   const selectedKey = toDateKey(selectedDate);
   const monthDays = useMemo(() => getMonthDays(visibleMonth), [visibleMonth]);
@@ -1174,8 +1181,11 @@ export default function CalendarDashboard() {
     const storedSession = readSession();
     const sessionUserId = storedSession?.user.id;
     if (!sessionUserId) {
-      setSession(storedSession);
+      clearSession();
+      setSession(null);
       setSettingsLoaded(false);
+      setWorkspaceReady(true);
+      setWorkspaceLoading(false);
       setWorkspaceMessage("Sign in again to load your workspace.");
       return;
     }
@@ -1197,7 +1207,10 @@ export default function CalendarDashboard() {
         preferencePayload,
       ] = await Promise.all([
         apiJson<{
-          user: AppSession["user"] & { theme?: AppSettings["theme"] };
+          user: AppSession["user"] & {
+            theme?: AppSettings["theme"];
+            skipIntro?: boolean | null;
+          };
         }>("/api/users/me"),
         apiJson<{ calendars: DbCalendar[]; limit: number }>("/api/calendars"),
         apiJson<{ categories: DbCategory[] }>("/api/categories"),
@@ -1208,13 +1221,6 @@ export default function CalendarDashboard() {
           "/api/settings/notifications",
         ),
       ]);
-      console.log("LOAD WORKSPACE RESULT:", {
-        userTheme: userPayload.user.theme,
-        calendarCount: calendarPayload.calendars.length,
-        eventCount: eventPayload.events.length,
-        eventDates: eventPayload.events.map((event) => event.startDate),
-        eventTitles: eventPayload.events.map((event) => event.title),
-      });
       const accessToken =
         (await createClient().auth.getSession()).data.session?.access_token ??
         readSession()?.accessToken;
@@ -1295,6 +1301,7 @@ export default function CalendarDashboard() {
           calendarDisplayNames,
         },
         loadedTheme,
+        userPayload.user.skipIntro === true,
       );
 
       if (
@@ -1310,35 +1317,10 @@ export default function CalendarDashboard() {
       setTags(loadedCategories.map(mapCategory));
       const mappedEvents = eventPayload.events.map(mapEvent);
 
-      console.log("MAPPED EVENTS FROM LOAD WORKSPACE:", {
-        rawCount: eventPayload.events.length,
-        mappedCount: mappedEvents.length,
-        rawDates: eventPayload.events.map((event) => event.startDate),
-        mappedDates: mappedEvents.map((event) => event.date),
-        titles: mappedEvents.map((event) => event.title),
-      });
-
       setEvents(mappedEvents);
 
-      const todayKey = toDateKey(today);
-      const todayHasEvents = mappedEvents.some(
-        (event) => event.date === todayKey && event.status !== "archived",
-      );
-
-      if (todayHasEvents) {
-        setSelectedDate(today);
-        setVisibleMonth(startOfMonth(today));
-      } else {
-        const firstUpcomingEvent = mappedEvents
-          .filter((event) => event.status !== "archived")
-          .sort((a, b) => a.date.localeCompare(b.date))[0];
-
-        if (firstUpcomingEvent) {
-          const eventDate = fromDateKey(firstUpcomingEvent.date);
-          setSelectedDate(eventDate);
-          setVisibleMonth(startOfMonth(eventDate));
-        }
-      }
+      setSelectedDate(today);
+      setVisibleMonth(startOfMonth(today));
       setActiveCategory("all");
       setDraft((current) => ({
         ...current,
@@ -1364,6 +1346,7 @@ export default function CalendarDashboard() {
       setSettingsLoaded(true);
       applyDocumentTheme(mappedSettings.theme, true);
       setWorkspaceReady(true);
+      setIntroOpen(!mappedSettings.skipIntro);
       setWorkspaceMessage(
         options.message ?? "Workspace loaded from your account.",
       );
@@ -1400,25 +1383,8 @@ export default function CalendarDashboard() {
 
       setEvents(mappedEvents);
 
-      const todayKey = toDateKey(today);
-      const todayHasEvents = mappedEvents.some(
-        (event) => event.date === todayKey && event.status !== "archived",
-      );
-
-      if (todayHasEvents) {
-        setSelectedDate(today);
-        setVisibleMonth(startOfMonth(today));
-      } else {
-        const firstUpcomingEvent = mappedEvents
-          .filter((event) => event.status !== "archived")
-          .sort((a, b) => a.date.localeCompare(b.date))[0];
-
-        if (firstUpcomingEvent) {
-          const eventDate = fromDateKey(firstUpcomingEvent.date);
-          setSelectedDate(eventDate);
-          setVisibleMonth(startOfMonth(eventDate));
-        }
-      }
+      setSelectedDate(today);
+      setVisibleMonth(startOfMonth(today));
 
       setStandaloneTasks(
         taskPayload.tasks
@@ -2777,12 +2743,16 @@ export default function CalendarDashboard() {
     try {
       const [profilePayload, notificationPayload] = await Promise.all([
         apiJson<{
-          user: AppSession["user"] & { theme?: AppSettings["theme"] };
+          user: AppSession["user"] & {
+            theme?: AppSettings["theme"];
+            skipIntro?: boolean | null;
+          };
         }>("/api/users/me", {
           method: "PATCH",
           body: JSON.stringify({
             name: settings.profile.accountName,
             theme: settings.theme,
+            skipIntro: settings.skipIntro,
             calendarDisplayNames: settings.profile.calendarDisplayNames,
           }),
         }),
@@ -2818,6 +2788,7 @@ export default function CalendarDashboard() {
 
       const preferences = notificationPayload.preferences;
       const savedTheme = normalizeTheme(profilePayload.user.theme);
+      const savedSkipIntro = profilePayload.user.skipIntro === true;
       const nextSettings = mapPreferencesToSettings(
         preferences,
         settings,
@@ -2826,6 +2797,7 @@ export default function CalendarDashboard() {
           accountName: profilePayload.user.name ?? "",
         },
         savedTheme,
+        savedSkipIntro,
       );
 
       setSettings(nextSettings);
@@ -2855,6 +2827,35 @@ export default function CalendarDashboard() {
       );
     }
   }
+
+  async function skipIntroFromModal() {
+    if (introSaving) return;
+
+    setIntroSaving(true);
+    try {
+      const payload = await apiJson<{
+        user: AppSession["user"] & {
+          theme?: AppSettings["theme"];
+          skipIntro?: boolean | null;
+        };
+      }>("/api/users/me", {
+        method: "PATCH",
+        body: JSON.stringify({ skipIntro: true }),
+      });
+      const nextSkipIntro = payload.user.skipIntro === true;
+      setSettings((current) => ({ ...current, skipIntro: nextSkipIntro }));
+      setSavedSettings((current) => ({ ...current, skipIntro: nextSkipIntro }));
+      setIntroOpen(false);
+      setSettingsMessage("Intro skipped. You can turn it back on from Settings.");
+    } catch (error) {
+      setWorkspaceMessage(
+        error instanceof Error ? error.message : "Could not update intro setting.",
+      );
+    } finally {
+      setIntroSaving(false);
+    }
+  }
+
 
   async function requestAccountDeletion() {
     if (deleteAccountText !== "DELETE") return;
@@ -2960,19 +2961,65 @@ export default function CalendarDashboard() {
     }
   }
 
+  if (!isAuthed) {
+    return (
+      <main className="grid min-h-dvh place-items-center bg-[var(--background)] px-6 text-[var(--foreground)]">
+        <section className="w-full max-w-md rounded-[30px] border border-[var(--border-soft)] bg-[var(--surface)] p-6 text-center shadow-xl shadow-[var(--shadow-soft)] backdrop-blur-2xl">
+          <div className="mx-auto grid size-14 place-items-center rounded-3xl bg-[var(--accent)] text-white shadow-lg shadow-[var(--shadow-soft)]">
+            <CalendarDays size={25} />
+          </div>
+          <h1 className="mt-4 text-2xl font-black">Login required</h1>
+          <p className="mt-2 text-sm font-semibold leading-6 text-[var(--muted)]">
+            Your calendar is private. Log in to continue, or create an account if you are new here.
+          </p>
+          <div className="mt-6 grid gap-3 sm:grid-cols-2">
+            <button
+              type="button"
+              onClick={() => router.push("/login")}
+              className="flex h-12 items-center justify-center rounded-full bg-[var(--accent)] px-5 text-sm font-black text-white shadow-lg shadow-[var(--shadow-soft)] active:scale-95"
+            >
+              Log in
+            </button>
+            <button
+              type="button"
+              onClick={() => router.push("/signup")}
+              className="flex h-12 items-center justify-center rounded-full border border-[var(--border-soft)] bg-[var(--surface-strong)] px-5 text-sm font-black text-[var(--foreground)] active:scale-95"
+            >
+              Sign up
+            </button>
+          </div>
+        </section>
+      </main>
+    );
+  }
+
   if (isAuthed && !workspaceReady) {
     return (
-      <main className="grid min-h-dvh place-items-center bg-[#f6f4ff] px-6 text-[#1d1d1f]">
-        <section className="w-full max-w-sm rounded-[32px] border border-white/70 bg-white/80 p-6 text-center shadow-xl shadow-black/5 backdrop-blur-xl">
-          <div className="mx-auto grid size-14 place-items-center rounded-3xl bg-[#007aff] text-white shadow-lg shadow-[#007aff]/25">
-            <CalendarDays size={26} />
+      <main className="grid min-h-dvh place-items-center bg-[var(--background)] px-6 text-[var(--foreground)]">
+        <section className="flex w-full max-w-xs flex-col items-center rounded-[28px] border border-[var(--border-soft)] bg-[var(--surface)] px-6 py-7 text-center shadow-xl shadow-[var(--shadow-soft)] backdrop-blur-2xl">
+          <div className="relative grid size-12 place-items-center rounded-2xl bg-[var(--accent)] text-white shadow-lg shadow-[var(--shadow-soft)]">
+            <CalendarDays size={23} />
+            <span className="absolute inset-0 rounded-2xl border border-white/20" />
           </div>
-          <h1 className="mt-4 text-2xl font-black">Loading Arcgenda</h1>
-          <p className="mt-2 text-sm font-semibold text-[#636366]">
-            Fetching your calendars, events, tasks, and theme from the database.
+
+          <div className="mt-5 flex items-center gap-2">
+            <span className="size-2 animate-pulse rounded-full bg-[var(--accent)]" />
+            <p className="text-xs font-black uppercase tracking-[0.18em] text-[var(--muted)]">
+              Loading workspace
+            </p>
+          </div>
+
+          <h1 className="mt-2 text-2xl font-black tracking-tight text-[var(--foreground)]">
+            Preparing Arcgenda
+          </h1>
+          <p className="mt-2 max-w-[240px] text-sm font-semibold leading-6 text-[var(--muted)]">
+            Fetching your saved theme, calendars, events, and tasks.
           </p>
-          <div className="mt-5 h-2 overflow-hidden rounded-full bg-[#e5e5ea]">
-            <div className="h-full w-1/2 animate-pulse rounded-full bg-[#007aff]" />
+
+          <div className="mt-6 flex items-center justify-center gap-1.5" aria-label="Loading">
+            <span className="size-2 animate-bounce rounded-full bg-[var(--accent)]" />
+            <span className="size-2 animate-bounce rounded-full bg-[var(--accent)] [animation-delay:120ms]" />
+            <span className="size-2 animate-bounce rounded-full bg-[var(--accent)] [animation-delay:240ms]" />
           </div>
         </section>
       </main>
@@ -2998,10 +3045,8 @@ export default function CalendarDashboard() {
             setQuery={setQuery}
             onAdd={openNewItem}
             onLogout={() => {
-              void createClient().auth.signOut();
-              clearSession();
               setSession(null);
-              router.replace("/login");
+              void logout("/login");
             }}
           />
           <section className="min-h-0 flex-1 scroll-pb-40 overflow-y-auto px-5 pb-[calc(env(safe-area-inset-bottom)+176px)] pt-5 lg:pb-6 lg:scroll-pb-6">
@@ -3256,6 +3301,18 @@ export default function CalendarDashboard() {
           onChange={setRescheduleDraft}
           onClose={() => setRescheduleTarget(null)}
           onCreate={createRescheduleReminder}
+        />
+      )}
+      {introOpen && (
+        <IntroModal
+          accountName={settings.profile.accountName || session?.user.name || session?.user.email || "there"}
+          selectedDate={selectedDate}
+          todayEvents={selectedEvents}
+          todayTasks={selectedTaskItems}
+          alerts={selectedAlertItems}
+          onClose={() => setIntroOpen(false)}
+          onSkipNextTime={skipIntroFromModal}
+          saving={introSaving}
         />
       )}
       {deleteCalendarTarget && (
@@ -4498,6 +4555,25 @@ function SettingsTab({
           This is your default name. You can use different display names inside
           shared calendars.
         </p>
+        <label className="mt-4 flex items-start gap-3 rounded-3xl bg-[#f8f7ff] p-4 shadow-sm shadow-black/5">
+          <input
+            type="checkbox"
+            checked={settings.skipIntro}
+            onChange={(event) =>
+              setSettings({ ...settings, skipIntro: event.target.checked })
+            }
+            className="mt-1 size-5 accent-[#007aff]"
+          />
+          <span>
+            <span className="block text-sm font-black text-[#18181b]">
+              Skip the welcome intro
+            </span>
+            <span className="mt-1 block text-xs font-bold leading-5 text-[#8e8e93]">
+              When this is on, Arcgenda opens straight to your calendar instead
+              of showing the tiny hello screen after login.
+            </span>
+          </span>
+        </label>
         {sharedCalendars.length > 0 && (
           <div className="mt-3 space-y-2">
             {sharedCalendars.map((calendar) => (
@@ -4546,7 +4622,7 @@ function SettingsTab({
           onChange={(event) => {
             const nextTheme = event.target.value as AppSettings["theme"];
             setSettings({ ...settings, theme: nextTheme });
-            applyDocumentTheme(nextTheme);
+            applyDocumentTheme(nextTheme, true);
           }}
           className="input-shell mt-3 w-full"
         >
@@ -5797,6 +5873,154 @@ function RescheduleReminderModal({
           >
             Create reminder
           </button>
+        </div>
+      </div>
+    </ModalShell>
+  );
+}
+
+function IntroModal({
+  accountName,
+  selectedDate,
+  todayEvents,
+  todayTasks,
+  alerts,
+  saving,
+  onClose,
+  onSkipNextTime,
+}: {
+  accountName: string;
+  selectedDate: Date;
+  todayEvents: CalendarEvent[];
+  todayTasks: TaskListItem[];
+  alerts: RescheduleReminder[];
+  saving: boolean;
+  onClose: () => void;
+  onSkipNextTime: () => void;
+}) {
+  const displayName = accountName.includes("@")
+    ? accountName.split("@")[0]
+    : accountName;
+  const visibleEvents = todayEvents.slice(0, 3);
+  const openTasks = todayTasks.filter((task) => !task.done).slice(0, 3);
+  const pendingAlerts = alerts.filter((alert) => !alert.done).slice(0, 3);
+
+  return (
+    <ModalShell>
+      <div className="w-full max-w-lg overflow-hidden rounded-[36px] border border-white/70 bg-white/95 shadow-2xl shadow-[#6d5dfc]/20 backdrop-blur-2xl">
+        <div className="relative overflow-hidden bg-[#f6f4ff] p-5">
+          <div className="pointer-events-none absolute -left-16 -top-16 size-44 rounded-full bg-[#ff9bd2]/45 blur-3xl" />
+          <div className="pointer-events-none absolute -right-16 top-8 size-44 rounded-full bg-[#7dd3fc]/55 blur-3xl" />
+          <div className="relative flex items-start justify-between gap-4">
+            <div>
+              <p className="text-xs font-black uppercase tracking-[0.16em] text-[#af52de]">
+                Welcome back
+              </p>
+              <h2 className="mt-2 text-3xl font-black tracking-tight text-[#18181b]">
+                Hello {displayName}, here&apos;s what&apos;s to come.
+              </h2>
+              <p className="mt-2 text-sm font-bold leading-6 text-[#636366]">
+                {formatLongDate(selectedDate)} is ready with your saved events,
+                tasks, reminders, and workspace preferences.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={onClose}
+              className="grid size-10 shrink-0 place-items-center rounded-full bg-white/80 text-[#636366] shadow-lg shadow-black/5"
+              aria-label="Close intro"
+            >
+              <X size={18} />
+            </button>
+          </div>
+        </div>
+
+        <div className="grid gap-3 p-5">
+          <div className="grid gap-3 sm:grid-cols-3">
+            {[
+              [String(todayEvents.length), "events today", "#007aff"],
+              [String(todayTasks.filter((task) => !task.done).length), "open tasks", "#34c759"],
+              [String(alerts.filter((alert) => !alert.done).length), "pending alerts", "#ff9500"],
+            ].map(([value, label, color]) => (
+              <div
+                key={label}
+                className="rounded-[26px] bg-[#f8f7ff] p-4 shadow-sm shadow-black/5"
+              >
+                <p className="text-3xl font-black" style={{ color }}>
+                  {value}
+                </p>
+                <p className="mt-1 text-xs font-black uppercase tracking-[0.12em] text-[#8e8e93]">
+                  {label}
+                </p>
+              </div>
+            ))}
+          </div>
+
+          <div className="rounded-[28px] bg-white p-4 shadow-lg shadow-black/5">
+            <p className="text-sm font-black text-[#18181b]">Today&apos;s preview</p>
+            <div className="mt-3 space-y-2">
+              {visibleEvents.length === 0 && openTasks.length === 0 && pendingAlerts.length === 0 ? (
+                <p className="rounded-2xl bg-[#f8f7ff] px-3 py-3 text-sm font-bold text-[#636366]">
+                  Your day is open. Add a plan, a focus block, or a task when
+                  you&apos;re ready.
+                </p>
+              ) : (
+                <>
+                  {visibleEvents.map((event) => (
+                    <div
+                      key={`intro-event-${event.id}`}
+                      className="flex items-center gap-3 rounded-2xl bg-[#f8f7ff] px-3 py-2"
+                    >
+                      <CalendarDays size={16} className="text-[#007aff]" />
+                      <span className="min-w-0 flex-1 truncate text-sm font-bold text-[#18181b]">
+                        {event.time} · {event.title}
+                      </span>
+                    </div>
+                  ))}
+                  {openTasks.map((task) => (
+                    <div
+                      key={`intro-task-${task.id}`}
+                      className="flex items-center gap-3 rounded-2xl bg-[#f8f7ff] px-3 py-2"
+                    >
+                      <ListChecks size={16} className="text-[#34c759]" />
+                      <span className="min-w-0 flex-1 truncate text-sm font-bold text-[#18181b]">
+                        {task.title}
+                      </span>
+                    </div>
+                  ))}
+                  {pendingAlerts.map((alert) => (
+                    <div
+                      key={`intro-alert-${alert.id}`}
+                      className="flex items-center gap-3 rounded-2xl bg-[#f8f7ff] px-3 py-2"
+                    >
+                      <BellRing size={16} className="text-[#ff9500]" />
+                      <span className="min-w-0 flex-1 truncate text-sm font-bold text-[#18181b]">
+                        {alert.time} · {alert.title}
+                      </span>
+                    </div>
+                  ))}
+                </>
+              )}
+            </div>
+          </div>
+
+          <div className="grid gap-3 sm:grid-cols-2">
+            <button
+              type="button"
+              onClick={onSkipNextTime}
+              disabled={saving}
+              className="h-12 rounded-full bg-[#f2f2f7] text-sm font-black text-[#636366] disabled:opacity-60"
+            >
+              {saving ? "Saving..." : "Don’t show again"}
+            </button>
+            <button
+              type="button"
+              onClick={onClose}
+              className="h-12 rounded-full bg-[#007aff] text-sm font-black text-white shadow-lg shadow-[#007aff]/25"
+            >
+              Open my calendar
+            </button>
+          </div>
         </div>
       </div>
     </ModalShell>

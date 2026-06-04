@@ -54,6 +54,7 @@ model User {
   email     String     @unique
   name      String?
   theme     String     @default("system")
+  skipIntro Boolean    @default(false)
   createdAt DateTime   @default(now())
   updatedAt DateTime   @updatedAt
 

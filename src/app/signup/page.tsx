@@ -1,9 +1,8 @@
 "use client";
 
-import Link from "next/link";
+import { FormEvent, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Eye, EyeOff, UserPlus } from "lucide-react";
-import { FormEvent, useState } from "react";
 import { saveSession, syncCurrentUser } from "@/lib/api";
 import { BrandMark } from "@/components/brand/brand-mark";
 
@@ -26,11 +25,14 @@ export default function SignupPage() {
     try {
       const { createClient } = await import("@/utils/supabase/client");
       const supabase = createClient();
+      const trimmedEmail = email.trim();
+      const trimmedName = name.trim();
+
       const { data, error } = await supabase.auth.signUp({
-        email,
+        email: trimmedEmail,
         password,
         options: {
-          data: { name },
+          data: { name: trimmedName },
           emailRedirectTo: `${window.location.origin}/login?confirmed=1`,
         },
       });
@@ -38,15 +40,20 @@ export default function SignupPage() {
       if (error || !data.user) throw error;
 
       if (!data.session) {
-        setMessage("Account created. Check your email to confirm it, then log in.");
+        setMessage(
+          "Account created. Check your email to confirm it, then log in.",
+        );
         return;
       }
 
       const { user } = await syncCurrentUser(data.session.access_token);
-      saveSession({
-        accessToken: data.session.access_token,
-        user,
-      });
+      saveSession(
+        {
+          accessToken: data.session.access_token,
+          user,
+        },
+        true,
+      );
       router.replace("/calendar");
     } catch (signupError) {
       setError(
@@ -92,9 +99,9 @@ export default function SignupPage() {
             onChange={(event) => setEmail(event.target.value)}
             required
           />
-          <div className="input-shell flex w-full items-center gap-2 pr-2">
+          <div className="input-shell flex w-full items-center gap-2 pr-2 overflow-hidden">
             <input
-              className="min-w-0 flex-1 bg-transparent outline-none"
+              className="min-w-0 flex-1 appearance-none border-0 bg-transparent p-0 text-base font-semibold text-[var(--foreground)] outline-none ring-0 placeholder:text-[var(--muted-strong)] focus:border-0 focus:outline-none focus:ring-0"
               type={showPassword ? "text" : "password"}
               placeholder="Password"
               value={password}
@@ -103,16 +110,21 @@ export default function SignupPage() {
             />
             <button
               type="button"
-              className="grid size-9 shrink-0 place-items-center rounded-full text-[#7c7c8a] transition active:scale-95"
+              className="grid size-9 shrink-0 place-items-center rounded-full text-[#7c7c8a] transition active:scale-95 dark:text-[var(--muted)]"
               onClick={() => setShowPassword((current) => !current)}
               aria-label={showPassword ? "Hide password" : "Show password"}
             >
               {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
             </button>
           </div>
-          {message && <p className="text-sm font-semibold text-[#34c759]">{message}</p>}
-          {error && <p className="text-sm font-semibold text-[#ff3b30]">{error}</p>}
+          {message && (
+            <p className="text-sm font-semibold text-[#34c759]">{message}</p>
+          )}
+          {error && (
+            <p className="text-sm font-semibold text-[#ff3b30]">{error}</p>
+          )}
           <button
+            type="submit"
             disabled={submitting}
             className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-[#007aff] text-base font-bold text-white shadow-lg shadow-[#007aff]/25 disabled:opacity-60"
           >
@@ -123,9 +135,12 @@ export default function SignupPage() {
 
         <p className="mt-5 text-center text-sm font-semibold text-[#7c7c8a]">
           Already have an account?{" "}
-          <Link className="font-bold text-[#007aff]" href="/login">
+          <a
+            href="/login"
+            className="font-bold text-[#007aff] underline-offset-4 hover:underline"
+          >
             Log in
-          </Link>
+          </a>
         </p>
       </section>
     </main>

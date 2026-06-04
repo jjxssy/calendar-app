@@ -7,6 +7,7 @@ export type SessionUser = {
 export type AppSession = {
   accessToken?: string;
   user: SessionUser;
+  remember?: boolean;
 };
 
 const SESSION_STORAGE_KEY = "arcgenda-session";
@@ -26,31 +27,64 @@ export async function syncCurrentUser(accessToken?: string) {
   return response.json() as Promise<{ user: SessionUser }>;
 }
 
-export function saveSession(session: AppSession) {
-  localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(session));
-  localStorage.removeItem(LEGACY_SESSION_STORAGE_KEY);
+export function saveSession(session: AppSession, remember = true) {
+  if (typeof window === "undefined") return;
+
+  const sessionToSave: AppSession = {
+    ...session,
+    remember,
+  };
+
+  if (remember) {
+    window.localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(sessionToSave));
+    window.sessionStorage.removeItem(SESSION_STORAGE_KEY);
+  } else {
+    window.sessionStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(sessionToSave));
+    window.localStorage.removeItem(SESSION_STORAGE_KEY);
+  }
+
+  window.localStorage.removeItem(LEGACY_SESSION_STORAGE_KEY);
+  window.sessionStorage.removeItem(LEGACY_SESSION_STORAGE_KEY);
 }
 
 export function readSession() {
   if (typeof window === "undefined") return null;
+
   const raw =
-    localStorage.getItem(SESSION_STORAGE_KEY) ??
-    localStorage.getItem(LEGACY_SESSION_STORAGE_KEY);
+    window.localStorage.getItem(SESSION_STORAGE_KEY) ??
+    window.sessionStorage.getItem(SESSION_STORAGE_KEY) ??
+    window.localStorage.getItem(LEGACY_SESSION_STORAGE_KEY) ??
+    window.sessionStorage.getItem(LEGACY_SESSION_STORAGE_KEY);
+
   if (!raw) return null;
 
   try {
     const session = JSON.parse(raw) as AppSession;
-    localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(session));
-    localStorage.removeItem(LEGACY_SESSION_STORAGE_KEY);
     return session;
   } catch {
-    localStorage.removeItem(SESSION_STORAGE_KEY);
-    localStorage.removeItem(LEGACY_SESSION_STORAGE_KEY);
+    clearSession();
     return null;
   }
 }
 
 export function clearSession() {
-  localStorage.removeItem(SESSION_STORAGE_KEY);
-  localStorage.removeItem(LEGACY_SESSION_STORAGE_KEY);
+  if (typeof window === "undefined") return;
+
+  window.localStorage.removeItem(SESSION_STORAGE_KEY);
+  window.localStorage.removeItem(LEGACY_SESSION_STORAGE_KEY);
+  window.sessionStorage.removeItem(SESSION_STORAGE_KEY);
+  window.sessionStorage.removeItem(LEGACY_SESSION_STORAGE_KEY);
+}
+
+export async function logout(redirectTo = "/login") {
+  try {
+    const { createClient } = await import("@/utils/supabase/client");
+    await createClient().auth.signOut();
+  } finally {
+    clearSession();
+    if (typeof window !== "undefined") {
+      window.localStorage.removeItem("arcgenda-theme");
+      window.location.replace(redirectTo);
+    }
+  }
 }

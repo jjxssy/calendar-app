@@ -1,4 +1,12 @@
-import { ApiError, fail, ok, readBody, requireUser, stringValue } from "@/lib/api-helpers";
+import {
+  ApiError,
+  booleanValue,
+  fail,
+  ok,
+  readBody,
+  requireUser,
+  stringValue,
+} from "@/lib/api-helpers";
 import { prisma } from "@/lib/prisma";
 
 export const dynamic = "force-dynamic";
@@ -10,10 +18,18 @@ function normalizeTheme(value: unknown) {
   return "system";
 }
 
+function userPayload<T extends { theme?: string | null; skipIntro?: boolean | null }>(user: T) {
+  return {
+    ...user,
+    theme: normalizeTheme(user.theme),
+    skipIntro: user.skipIntro === true,
+  };
+}
+
 export async function GET() {
   try {
     const user = await requireUser();
-    return ok({ user: { ...user, theme: normalizeTheme(user.theme) } });
+    return ok({ user: userPayload(user) });
   } catch (error) {
     return fail(error);
   }
@@ -22,7 +38,7 @@ export async function GET() {
 export async function POST() {
   try {
     const user = await requireUser();
-    return ok({ user: { ...user, theme: normalizeTheme(user.theme) } });
+    return ok({ user: userPayload(user) });
   } catch (error) {
     return fail(error);
   }
@@ -33,6 +49,8 @@ export async function PATCH(request: Request) {
     const user = await requireUser();
     const body = await readBody(request);
     const theme = stringValue(body.theme);
+    const skipIntro = booleanValue(body.skipIntro);
+
     if (theme && !["system", "light", "dark"].includes(theme)) {
       throw new ApiError("theme must be system, light, or dark.");
     }
@@ -43,6 +61,7 @@ export async function PATCH(request: Request) {
         data: {
           name: stringValue(body.name),
           theme,
+          skipIntro,
         },
       });
 
@@ -65,7 +84,7 @@ export async function PATCH(request: Request) {
       return savedUser;
     });
 
-    return ok({ user: { ...updated, theme: normalizeTheme(updated.theme) } });
+    return ok({ user: userPayload(updated) });
   } catch (error) {
     return fail(error);
   }

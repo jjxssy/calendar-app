@@ -11,6 +11,7 @@ alter table public."ActivityHistory" enable row level security;
 alter table public."NotificationPreference" enable row level security;
 alter table public."PushSubscription" enable row level security;
 alter table public."Feedback" enable row level security;
+alter table "User" add COLUMN if not exists "skipIntro" boolean not null default false;
 
 drop policy if exists "Users can manage own user row" on public."User";
 create policy "Users can manage own user row"
