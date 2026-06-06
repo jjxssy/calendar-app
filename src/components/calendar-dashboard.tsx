@@ -75,6 +75,7 @@ type TaskView = "day" | "week" | "month";
 type StatsRange = "daily" | "monthly" | "yearly";
 type ReminderPreset = "5m" | "10m" | "30m" | "1h" | "1d" | "custom";
 type CancelScope = "series-cancel" | "series-delete";
+
 type SettingsSectionId =
   | "profile"
   | "calendars"
@@ -82,7 +83,6 @@ type SettingsSectionId =
   | "theme"
   | "ai"
   | "sync"
-  | "pro"
   | "danger";
 
 type EventDraft = Pick<
@@ -181,6 +181,16 @@ type DbCalendar = {
   visible: boolean;
   shared: boolean;
   members: DbMember[];
+};
+
+type CalendarInvitation = {
+  id: string;
+  email: string;
+  role: "owner" | "editor" | "viewer";
+  status: "pending";
+  calendar: DbCalendar & {
+    owner?: { id: string; email: string; name?: string | null } | null;
+  };
 };
 
 type DbCategory = {
@@ -322,7 +332,6 @@ const settingsNavigation: Array<{ id: SettingsSectionId; label: string }> = [
   { id: "theme", label: "Theme" },
   { id: "ai", label: "AI & Privacy" },
   { id: "sync", label: "Sync & Export" },
-  { id: "pro", label: "Pro Preview" },
   { id: "danger", label: "Danger" },
 ];
 const colorGrid = [
@@ -892,6 +901,7 @@ export default function CalendarDashboard() {
   const [eventReminders, setEventReminders] = useState<RescheduleReminder[]>(
     [],
   );
+  const [calendarInvitations, setCalendarInvitations] = useState<CalendarInvitation[]>([]);
   const [standaloneTasks, setStandaloneTasks] = useState<StandaloneTask[]>([]);
   const [activeCategory, setActiveCategory] = useState<string | "all">("all");
   const [calendarDraft, setCalendarDraft] = useState({
@@ -1530,6 +1540,7 @@ export default function CalendarDashboard() {
         eventPayload,
         taskPayload,
         reminderPayload,
+        invitationPayload,
         preferencePayload,
       ] = await Promise.all([
         apiJson<{
@@ -1546,6 +1557,7 @@ export default function CalendarDashboard() {
         apiJson<{ events: DbEvent[] }>("/api/events"),
         apiJson<{ tasks: DbTask[] }>("/api/tasks"),
         apiJson<{ reminders: DbReminder[] }>("/api/reminders"),
+        apiJson<{ invitations: CalendarInvitation[] }>("/api/calendar-invitations"),
         apiJson<{ preferences: DbNotificationPreferences }>(
           "/api/settings/notifications",
         ),
@@ -1665,6 +1677,7 @@ export default function CalendarDashboard() {
           .filter((reminder) => !reminder.eventId && !reminder.taskId)
           .map(mapReminder),
       );
+      setCalendarInvitations(invitationPayload.invitations);
       setStandaloneTasks(
         taskPayload.tasks.map((task) => mapStandaloneTask(task, today)),
       );
@@ -2782,6 +2795,52 @@ export default function CalendarDashboard() {
     }
   }
 
+    async function editTaskTitle(taskId: string, currentTitle: string) {
+    const nextTitle = window.prompt("Edit task title", currentTitle)?.trim();
+
+    if (!nextTitle || nextTitle === currentTitle) return;
+
+    const action = `task:${taskId}:edit-title`;
+    if (isBusy(action)) return;
+
+    const previousEvents = events;
+    const previousTasks = standaloneTasks;
+
+    setStandaloneTasks((current) =>
+      current.map((task) =>
+        task.id === taskId ? { ...task, title: nextTitle } : task,
+      ),
+    );
+
+    setEvents((current) =>
+      current.map((event) => ({
+        ...event,
+        tasks: event.tasks.map((task) =>
+          task.id === taskId ? { ...task, title: nextTitle } : task,
+        ),
+      })),
+    );
+
+    markBusy(action, true);
+
+    try {
+      await apiJson(`/api/tasks/${taskId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ title: nextTitle }),
+      });
+
+      setWorkspaceMessage("Task renamed.");
+    } catch (error) {
+      setEvents(previousEvents);
+      setStandaloneTasks(previousTasks);
+      setWorkspaceMessage(
+        error instanceof Error ? error.message : "Could not rename task.",
+      );
+    } finally {
+      markBusy(action, false);
+    }
+  }
+
   async function createTaskForEvent(eventId: string) {
     const action = `event:${eventId}:create-task`;
     if (isBusy(action)) return;
@@ -3173,6 +3232,44 @@ export default function CalendarDashboard() {
           ? error.message
           : "Could not leave shared calendar.",
       );
+    }
+  }
+
+    async function respondToCalendarInvitation(
+    invitationId: string,
+    action: "accept" | "decline",
+  ) {
+    const busyKey = `calendar-invitation:${invitationId}:${action}`;
+    if (isBusy(busyKey)) return;
+
+    markBusy(busyKey, true);
+
+    try {
+      await apiJson("/api/calendar-invitations", {
+        method: "POST",
+        body: JSON.stringify({ memberId: invitationId, action }),
+      });
+
+      setCalendarInvitations((current) =>
+        current.filter((invitation) => invitation.id !== invitationId),
+      );
+
+      if (action === "accept") {
+        await loadWorkspace({
+          message: "Shared calendar accepted.",
+          showLoading: false,
+        });
+      } else {
+        setWorkspaceMessage("Shared calendar declined.");
+      }
+    } catch (error) {
+      setWorkspaceMessage(
+        error instanceof Error
+          ? error.message
+          : "Could not update shared calendar invitation.",
+      );
+    } finally {
+      markBusy(busyKey, false);
     }
   }
 
@@ -3586,6 +3683,7 @@ export default function CalendarDashboard() {
                   onToggleTask={toggleTask}
                   onUnlinkTask={unlinkTaskFromEvent}
                   onDeleteTask={deleteTask}
+                  onEditTask={editTaskTitle}
                   calendars={calendars}
                   shareDrafts={shareDrafts}
                   setShareDrafts={setShareDrafts}
@@ -3594,16 +3692,23 @@ export default function CalendarDashboard() {
               </>
             )}
             {activeTab === "tasks" && (
-              <TasksTab
+                            <TasksTab
                 tasks={searchedVisibleTaskItems}
                 taskView={taskView}
                 setTaskView={setTaskView}
                 title={taskViewTitle}
                 onToggle={toggleTask}
                 onDelete={deleteTask}
+                onEdit={editTaskTitle}
               />
             )}
-            {activeTab === "alerts" && <AlertsTab alerts={searchedAllAlertItems} />}
+                        {activeTab === "alerts" && (
+              <AlertsTab
+                alerts={searchedAllAlertItems}
+                calendarInvitations={calendarInvitations}
+                onCalendarInvitationResponse={respondToCalendarInvitation}
+              />
+            )}
             {activeTab === "stats" && (
               <StatsTab
                 stats={stats}
@@ -4215,6 +4320,7 @@ function Agenda({
   onEdit,
   onCancel,
   onDelete,
+  onEditTask,
   onUndoCancel,
   unboundTasks,
   taskDrafts,
@@ -4245,6 +4351,7 @@ function Agenda({
   onToggleTask: (taskId: string) => void;
   onUnlinkTask: (eventId: string, taskId: string) => void;
   onDeleteTask: (taskId: string) => void;
+  onEditTask: (taskId: string, currentTitle: string) => void;
   calendars: AppCalendar[];
   shareDrafts: Record<string, string>;
   setShareDrafts: (drafts: Record<string, string>) => void;
@@ -4278,6 +4385,7 @@ function Agenda({
               onEdit={() => onEdit(event)}
               onCancel={() => onCancel(event)}
               onDelete={() => onDelete(event.id)}
+              onEditTask={onEditTask}
               onUndoCancel={() => onUndoCancel(event.id)}
               unboundTasks={unboundTasks}
               taskDraft={taskDrafts[event.id] ?? ""}
@@ -4314,6 +4422,7 @@ function EventCard({
   onEdit,
   onCancel,
   onDelete,
+  onEditTask,
   onUndoCancel,
   unboundTasks,
   taskDraft,
@@ -4333,6 +4442,7 @@ function EventCard({
   onEdit: () => void;
   onCancel: () => void;
   onDelete: () => void;
+  onEditTask: (taskId: string, currentTitle: string) => void;
   onUndoCancel: () => void;
   unboundTasks: StandaloneTask[];
   taskDraft: string;
@@ -4497,7 +4607,13 @@ function EventCard({
                         </p>
                       )}
                     </div>
-                    <div className="flex gap-1">
+                                        <div className="flex gap-1">
+                      <IconButton
+                        label={`Edit ${task.title}`}
+                        onClick={() => onEditTask(task.id, task.title)}
+                      >
+                        <Edit3 size={14} />
+                      </IconButton>
                       <IconButton
                         label={`Unlink ${task.title}`}
                         onClick={() => onUnlinkTask(task.id)}
@@ -4648,6 +4764,7 @@ function TasksTab({
   title,
   onToggle,
   onDelete,
+  onEdit,
 }: {
   tasks: TaskListItem[];
   taskView: TaskView;
@@ -4655,6 +4772,7 @@ function TasksTab({
   title: string;
   onToggle: (taskId: string) => void;
   onDelete: (taskId: string) => void;
+  onEdit: (taskId: string, currentTitle: string) => void;
 }) {
   return (
     <section>
@@ -4719,13 +4837,21 @@ function TasksTab({
                   {task.eventStatus === "cancelled" ? " · event cancelled" : ""}
                 </span>
               </span>
-              <IconButton
-                label={`Delete ${task.title}`}
-                onClick={() => onDelete(task.id)}
-                danger
-              >
-                <Trash2 size={15} />
-              </IconButton>
+                            <div className="flex gap-1">
+                <IconButton
+                  label={`Edit ${task.title}`}
+                  onClick={() => onEdit(task.id, task.title)}
+                >
+                  <Edit3 size={15} />
+                </IconButton>
+                <IconButton
+                  label={`Delete ${task.title}`}
+                  onClick={() => onDelete(task.id)}
+                  danger
+                >
+                  <Trash2 size={15} />
+                </IconButton>
+              </div>
             </article>
           ))
         )}
@@ -4734,15 +4860,75 @@ function TasksTab({
   );
 }
 
-function AlertsTab({ alerts }: { alerts: RescheduleReminder[] }) {
+function AlertsTab({
+  alerts,
+  calendarInvitations,
+  onCalendarInvitationResponse,
+}: {
+  alerts: RescheduleReminder[];
+  calendarInvitations: CalendarInvitation[];
+  onCalendarInvitationResponse: (
+    invitationId: string,
+    action: "accept" | "decline",
+  ) => void;
+}) {
   return (
     <section>
-      <SectionTitle eyebrow="Alerts" title="Reminders" count={alerts.length} />
+      <SectionTitle
+        eyebrow="Alerts"
+        title="Reminders & shared calendars"
+        count={alerts.length + calendarInvitations.length}
+      />
+
       <div className="space-y-3">
-        {alerts.length === 0 ? (
+        {calendarInvitations.map((invitation) => (
+          <article
+            key={invitation.id}
+            className="rounded-[24px] border border-white/60 bg-white/75 p-4 shadow-lg shadow-black/5 backdrop-blur-xl"
+          >
+            <div className="flex items-start gap-3">
+              <div
+                className="mt-1 size-3 rounded-full"
+                style={{ backgroundColor: invitation.calendar.color }}
+              />
+              <div className="min-w-0 flex-1">
+                <p className="text-base font-black text-[#1d1d1f]">
+                  Shared calendar invite
+                </p>
+                <p className="mt-1 text-sm font-semibold text-[#636366]">
+                  You were invited to{" "}
+                  <span className="font-black">{invitation.calendar.name}</span>{" "}
+                  as {invitation.role}.
+                </p>
+                <p className="mt-1 text-xs font-bold text-[#8e8e93]">
+                  Free plan allows one shared calendar, and shared calendars count toward the 3 calendar limit.
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-4 grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => onCalendarInvitationResponse(invitation.id, "decline")}
+                className="h-10 rounded-full bg-[#ffe8e6] px-4 text-sm font-black text-[#ff3b30] transition active:scale-95"
+              >
+                Decline
+              </button>
+              <button
+                type="button"
+                onClick={() => onCalendarInvitationResponse(invitation.id, "accept")}
+                className="h-10 rounded-full bg-[#34c759] px-4 text-sm font-black text-white transition active:scale-95"
+              >
+                Accept
+              </button>
+            </div>
+          </article>
+        ))}
+
+        {alerts.length === 0 && calendarInvitations.length === 0 ? (
           <EmptyState
             title="No reminders"
-            body="Cancelled events can create reschedule reminders here."
+            body="Cancelled events, task reminders, and shared calendar invites will show here."
           />
         ) : (
           alerts.map((alert) => (
@@ -5466,26 +5652,6 @@ function SettingsTab({
           <PlaceholderRow title="Outlook Calendar sync" />
           <PlaceholderRow title="Device calendar sync" />
           <PlaceholderRow title="Export data" />
-        </div>
-      </SettingsCard>
-
-      <SettingsCard
-        id="settings-pro"
-        sectionId="pro"
-        activeSection={activeSection}
-        onSectionChange={onSectionChange}
-        title="Pro Preview"
-        icon={<Sparkles size={18} />}
-      >
-        <div className="grid grid-cols-2 gap-3">
-          <PlanCard
-            title="Free"
-            body="3 calendars, 1 shared calendar, local AI Lite."
-          />
-          <PlanCard
-            title="Pro preview"
-            body="More calendars, deeper sync, payments coming soon."
-          />
         </div>
       </SettingsCard>
 
