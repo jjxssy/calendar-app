@@ -2973,20 +2973,20 @@ export default function CalendarDashboard() {
             Your calendar is private. Log in to continue, or create an account if you are new here.
           </p>
           <div className="mt-6 grid gap-3 sm:grid-cols-2">
-            <button
+            <a
               type="button"
-              onClick={() => router.push("/login")}
+              href="/login"
               className="flex h-12 items-center justify-center rounded-full bg-[var(--accent)] px-5 text-sm font-black text-white shadow-lg shadow-[var(--shadow-soft)] active:scale-95"
             >
               Log in
-            </button>
-            <button
+            </a>
+            <a
               type="button"
-              onClick={() => router.push("/signup")}
+              href="/signup"
               className="flex h-12 items-center justify-center rounded-full border border-[var(--border-soft)] bg-[var(--surface-strong)] px-5 text-sm font-black text-[var(--foreground)] active:scale-95"
             >
               Sign up
-            </button>
+            </a>
           </div>
         </section>
       </main>

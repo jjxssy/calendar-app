@@ -77,12 +77,14 @@ export default function RootLayout({
           }}
         />
         {children}
-        <script
-          dangerouslySetInnerHTML={{
-            __html:
-              "if('serviceWorker'in navigator){addEventListener('load',function(){var r=function(){navigator.serviceWorker.register('/sw.js').catch(function(e){console.warn('Service worker registration failed:',e)})};'requestIdleCallback'in window?requestIdleCallback(r,{timeout:3000}):setTimeout(r,1200)})}",
-          }}
-        />
+        {process.env.NODE_ENV === "production" && (
+          <script
+            dangerouslySetInnerHTML={{
+              __html:
+                "if('serviceWorker'in navigator){addEventListener('load',function(){navigator.serviceWorker.register('/sw.js').catch(function(e){console.warn('Service worker registration failed:',e)})})}",
+            }}
+          />
+        )}
       </body>
     </html>
   );

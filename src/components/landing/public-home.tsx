@@ -60,11 +60,31 @@ const featureCards = [
 ];
 
 const workflow = [
-  ["1", "Open your workspace", "Arcgenda loads your saved theme, calendars, events, tasks, reminders, and profile from the database first."],
-  ["2", "Plan the moment", "Add the event details, choose the calendar and tag, and pin important plans when they deserve the tiny crown."],
-  ["3", "Attach the tiny to-dos", "Create linked tasks inside an event or standalone tasks for the selected day, week, or month."],
-  ["4", "Let reminders behave", "Choose reminder timing and quiet hours so alerts help instead of poking your brain with a tiny fork."],
-  ["5", "Review the week", "Use stats, alerts, task views, and shared calendars to keep the whole schedule readable."],
+  [
+    "1",
+    "Open your workspace",
+    "Arcgenda loads your saved theme, calendars, events, tasks, reminders, and profile from the database first.",
+  ],
+  [
+    "2",
+    "Plan the moment",
+    "Add the event details, choose the calendar and tag, and pin important plans when they deserve the tiny crown.",
+  ],
+  [
+    "3",
+    "Attach the tiny to-dos",
+    "Create linked tasks inside an event or standalone tasks for the selected day, week, or month.",
+  ],
+  [
+    "4",
+    "Let reminders behave",
+    "Choose reminder timing and quiet hours so alerts help instead of poking your brain with a tiny fork.",
+  ],
+  [
+    "5",
+    "Review the week",
+    "Use stats, alerts, task views, and shared calendars to keep the whole schedule readable.",
+  ],
 ];
 
 const installNotes = [
@@ -73,26 +93,50 @@ const installNotes = [
   "Closed-app push requires browser support, saved subscription, VAPID keys, and a scheduler.",
 ];
 
-function GlassCard({ children, className = "" }: { children: React.ReactNode; className?: string }) {
+function GlassCard({
+  children,
+  className = "",
+}: {
+  children: React.ReactNode;
+  className?: string;
+}) {
   return (
-    <div className={`rounded-[34px] border border-white/70 bg-white/72 p-5 shadow-2xl shadow-[#6d5dfc]/10 backdrop-blur-3xl ${className}`}>
+    <div
+      className={`rounded-[34px] border border-white/70 bg-white/72 p-5 shadow-2xl shadow-[#6d5dfc]/10 backdrop-blur-3xl ${className}`}
+    >
       {children}
     </div>
   );
 }
 
-function SectionTitle({ eyebrow, title, body }: { eyebrow: string; title: string; body: string }) {
+function SectionTitle({
+  eyebrow,
+  title,
+  body,
+}: {
+  eyebrow: string;
+  title: string;
+  body: string;
+}) {
   return (
     <div className="mx-auto max-w-3xl text-center">
-      <p className="text-xs font-black uppercase tracking-[0.18em] text-[#af52de]">{eyebrow}</p>
-      <h2 className="mt-2 text-3xl font-semibold tracking-tight md:text-5xl">{title}</h2>
-      <p className="mt-3 text-sm font-semibold leading-6 text-[#636366] md:text-base">{body}</p>
+      <p className="text-xs font-black uppercase tracking-[0.18em] text-[#af52de]">
+        {eyebrow}
+      </p>
+      <h2 className="mt-2 text-3xl font-semibold tracking-tight md:text-5xl">
+        {title}
+      </h2>
+      <p className="mt-3 text-sm font-semibold leading-6 text-[#636366] md:text-base">
+        {body}
+      </p>
     </div>
   );
 }
 
 function HeroPreview() {
-  const days = [27, 28, 29, 30, 31, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+  const days = [
+    27, 28, 29, 30, 31, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+  ];
   const rows = [
     ["09:00", "Focus block", "#5856d6"],
     ["12:30", "Study sprint", "#007aff"],
@@ -106,10 +150,14 @@ function HeroPreview() {
       <div className="relative rounded-[30px] bg-[#f8f7ff] p-4">
         <div className="flex items-center justify-between">
           <div>
-            <p className="text-xs font-black uppercase tracking-[0.16em] text-[#8e8e93]">Live workspace</p>
+            <p className="text-xs font-black uppercase tracking-[0.16em] text-[#8e8e93]">
+              Live workspace
+            </p>
             <h3 className="mt-1 text-2xl font-black">June overview</h3>
           </div>
-          <span className="rounded-full bg-[#e9fbea] px-3 py-1 text-xs font-black text-[#34c759]">Synced</span>
+          <span className="rounded-full bg-[#e9fbea] px-3 py-1 text-xs font-black text-[#34c759]">
+            Synced
+          </span>
         </div>
         <div className="mt-4 grid grid-cols-5 gap-2">
           {days.map((day, index) => (
@@ -129,8 +177,14 @@ function HeroPreview() {
         </div>
         <div className="mt-4 space-y-3">
           {rows.map(([time, title, color]) => (
-            <div key={title} className="flex items-center gap-3 rounded-3xl bg-white/82 p-3 shadow-lg shadow-black/5">
-              <span className="h-10 w-1.5 rounded-full" style={{ backgroundColor: color }} />
+            <div
+              key={title}
+              className="flex items-center gap-3 rounded-3xl bg-white/82 p-3 shadow-lg shadow-black/5"
+            >
+              <span
+                className="h-10 w-1.5 rounded-full"
+                style={{ backgroundColor: color }}
+              />
               <div className="min-w-0">
                 <p className="text-xs font-bold text-[#8e8e93]">{time}</p>
                 <p className="truncate text-sm font-black">{title}</p>
@@ -157,7 +211,9 @@ function LoadingPreview() {
               <span className="absolute -right-1 -top-1 size-4 rounded-full bg-[#34c759]" />
             </span>
             <div>
-              <p className="text-xs font-black uppercase tracking-[0.16em] text-[#af52de]">No fake dashboard</p>
+              <p className="text-xs font-black uppercase tracking-[0.16em] text-[#af52de]">
+                No fake dashboard
+              </p>
               <h3 className="text-xl font-black">Database-first loading</h3>
             </div>
           </div>
@@ -166,12 +222,18 @@ function LoadingPreview() {
           </span>
         </div>
         <p className="mt-4 text-sm font-semibold leading-6 text-[#636366]">
-          The app waits for your saved workspace before showing the real calendar, so users do not see zero/default data first.
+          The app waits for your saved workspace before showing the real
+          calendar, so users do not see zero/default data first.
         </p>
         <div className="mt-5 grid gap-2">
           {steps.map((step, index) => (
-            <div key={step} className="flex items-center gap-3 rounded-2xl bg-white/80 px-3 py-2 shadow-sm shadow-black/5">
-              <span className="grid size-6 place-items-center rounded-full bg-[#e5f1ff] text-[11px] font-black text-[#007aff]">{index + 1}</span>
+            <div
+              key={step}
+              className="flex items-center gap-3 rounded-2xl bg-white/80 px-3 py-2 shadow-sm shadow-black/5"
+            >
+              <span className="grid size-6 place-items-center rounded-full bg-[#e5f1ff] text-[11px] font-black text-[#007aff]">
+                {index + 1}
+              </span>
               <span className="text-sm font-bold text-[#636366]">{step}</span>
               <span className="ml-auto flex gap-1">
                 <span className="size-1.5 animate-bounce rounded-full bg-[#007aff]" />
@@ -195,12 +257,18 @@ function PhonePreview() {
           <Download className="text-[#007aff]" size={22} />
           <h3 className="mt-3 text-lg font-black">Install Arcgenda</h3>
           <p className="mt-2 text-xs font-bold leading-5 text-[#636366]">
-            Add to Home Screen, open like an app, and enable notifications when the device supports them.
+            Add to Home Screen, open like an app, and enable notifications when
+            the device supports them.
           </p>
         </div>
         <div className="mt-3 grid grid-cols-3 gap-2">
           {["Cal", "Tasks", "AI"].map((item) => (
-            <span key={item} className="rounded-2xl bg-white/80 px-2 py-2 text-center text-[11px] font-black text-[#636366]">{item}</span>
+            <span
+              key={item}
+              className="rounded-2xl bg-white/80 px-2 py-2 text-center text-[11px] font-black text-[#636366]"
+            >
+              {item}
+            </span>
           ))}
         </div>
       </div>
@@ -229,24 +297,44 @@ export function PublicHome() {
             A calendar that opens with your real life, not placeholder noise.
           </h1>
           <p className="mt-5 max-w-2xl text-base font-semibold leading-7 text-[#636366] md:text-lg">
-            Arcgenda brings calendars, tasks, reminders, shared planning, stats, PWA install support, and optional AI Lite into one soft, fast workspace.
+            Arcgenda brings calendars, tasks, reminders, shared planning, stats,
+            PWA install support, and optional AI Lite into one soft, fast
+            workspace.
           </p>
           <div className="mt-7 flex flex-wrap gap-3">
-            <Link href="/signup" className="rounded-full bg-[#1d1d1f] px-6 py-3 text-base font-bold text-white shadow-xl shadow-black/20 transition active:scale-95">
+            <a
+              href="/signup"
+              className="relative z-10 rounded-full bg-[#1d1d1f] px-6 py-3 text-base font-bold text-white shadow-xl shadow-black/20 transition active:scale-95"
+            >
               Start free
-            </Link>
-            <Link href="/login" className="rounded-full bg-white/78 px-6 py-3 text-base font-bold text-[#007aff] shadow-lg shadow-black/5 backdrop-blur-xl transition active:scale-95">
+            </a>
+            <a
+              href="/login"
+              className="relative z-10 rounded-full bg-white/78 px-6 py-3 text-base font-bold text-[#007aff] shadow-lg shadow-black/5 backdrop-blur-xl transition active:scale-95"
+            >
               Log in
-            </Link>
-            <Link href="/get-app" className="rounded-full bg-[#e5f1ff] px-6 py-3 text-base font-bold text-[#007aff] transition active:scale-95">
+            </a>
+            <a
+              href="/get-app"
+              className="relative z-10 rounded-full bg-[#e5f1ff] px-6 py-3 text-base font-bold text-[#007aff] transition active:scale-95"
+            >
               Get the app
-            </Link>
+            </a>
           </div>
           <div className="mt-7 grid max-w-2xl gap-3 sm:grid-cols-3">
-            {[["3", "free calendars"], ["Roles", "owner/editor/viewer"], ["PWA", "phone + desktop"]].map(([value, label]) => (
-              <div key={label} className="rounded-3xl bg-white/70 p-4 shadow-lg shadow-black/5 backdrop-blur-xl">
+            {[
+              ["3", "free calendars"],
+              ["Roles", "owner/editor/viewer"],
+              ["PWA", "phone + desktop"],
+            ].map(([value, label]) => (
+              <div
+                key={label}
+                className="rounded-3xl bg-white/70 p-4 shadow-lg shadow-black/5 backdrop-blur-xl"
+              >
                 <p className="text-2xl font-black">{value}</p>
-                <p className="mt-1 text-xs font-bold uppercase tracking-[0.12em] text-[#8e8e93]">{label}</p>
+                <p className="mt-1 text-xs font-bold uppercase tracking-[0.12em] text-[#8e8e93]">
+                  {label}
+                </p>
               </div>
             ))}
           </div>
@@ -264,12 +352,19 @@ export function PublicHome() {
           {featureCards.map((feature) => {
             const Icon = feature.icon;
             return (
-              <article key={feature.title} className="rounded-[30px] border border-white/65 bg-white/72 p-5 shadow-xl shadow-black/5 backdrop-blur-2xl transition hover:-translate-y-1 hover:shadow-2xl hover:shadow-[#6d5dfc]/10">
-                <span className={`grid size-12 place-items-center rounded-2xl ${feature.tint}`}>
+              <article
+                key={feature.title}
+                className="rounded-[30px] border border-white/65 bg-white/72 p-5 shadow-xl shadow-black/5 backdrop-blur-2xl transition hover:-translate-y-1 hover:shadow-2xl hover:shadow-[#6d5dfc]/10"
+              >
+                <span
+                  className={`grid size-12 place-items-center rounded-2xl ${feature.tint}`}
+                >
                   <Icon size={21} />
                 </span>
                 <h3 className="mt-4 text-lg font-black">{feature.title}</h3>
-                <p className="mt-2 text-sm font-semibold leading-6 text-[#636366]">{feature.body}</p>
+                <p className="mt-2 text-sm font-semibold leading-6 text-[#636366]">
+                  {feature.body}
+                </p>
               </article>
             );
           })}
@@ -279,14 +374,29 @@ export function PublicHome() {
       <section className="relative mx-auto grid max-w-6xl gap-5 py-10 lg:grid-cols-[.95fr_1.05fr] lg:items-center">
         <LoadingPreview />
         <div>
-          <p className="text-xs font-black uppercase tracking-[0.16em] text-[#af52de]">Better first impression</p>
-          <h2 className="mt-2 text-3xl font-semibold tracking-tight md:text-5xl">A loading screen that actually matches what is loading.</h2>
+          <p className="text-xs font-black uppercase tracking-[0.16em] text-[#af52de]">
+            Better first impression
+          </p>
+          <h2 className="mt-2 text-3xl font-semibold tracking-tight md:text-5xl">
+            A loading screen that actually matches what is loading.
+          </h2>
           <p className="mt-4 text-sm font-semibold leading-6 text-[#636366] md:text-base">
-            Instead of showing a dark shell, zeros, or old default cards, Arcgenda can show a branded sync screen while it fetches profile, theme, calendars, categories, events, tasks, reminders, and notification preferences.
+            Instead of showing a dark shell, zeros, or old default cards,
+            Arcgenda can show a branded sync screen while it fetches profile,
+            theme, calendars, categories, events, tasks, reminders, and
+            notification preferences.
           </p>
           <div className="mt-5 grid gap-3 sm:grid-cols-2">
-            {["Theme applies after DB fetch", "No demo event flash", "Workspace data loads together", "Friendly status animation"].map((item) => (
-              <div key={item} className="flex items-center gap-3 rounded-3xl bg-white/70 p-3 text-sm font-bold shadow-lg shadow-black/5 backdrop-blur-xl">
+            {[
+              "Theme applies after DB fetch",
+              "No demo event flash",
+              "Workspace data loads together",
+              "Friendly status animation",
+            ].map((item) => (
+              <div
+                key={item}
+                className="flex items-center gap-3 rounded-3xl bg-white/70 p-3 text-sm font-bold shadow-lg shadow-black/5 backdrop-blur-xl"
+              >
                 <CheckCircle2 className="text-[#34c759]" size={18} />
                 {item}
               </div>
@@ -303,10 +413,17 @@ export function PublicHome() {
         />
         <div className="mt-8 grid gap-3 md:grid-cols-5">
           {workflow.map(([number, title, body]) => (
-            <article key={title} className="rounded-[28px] bg-white/72 p-4 shadow-lg shadow-black/5 backdrop-blur-xl transition hover:-translate-y-1">
-              <span className="grid size-9 place-items-center rounded-full bg-[#1d1d1f] text-sm font-black text-white">{number}</span>
+            <article
+              key={title}
+              className="rounded-[28px] bg-white/72 p-4 shadow-lg shadow-black/5 backdrop-blur-xl transition hover:-translate-y-1"
+            >
+              <span className="grid size-9 place-items-center rounded-full bg-[#1d1d1f] text-sm font-black text-white">
+                {number}
+              </span>
               <h3 className="mt-4 text-base font-black">{title}</h3>
-              <p className="mt-2 text-sm font-semibold leading-6 text-[#636366]">{body}</p>
+              <p className="mt-2 text-sm font-semibold leading-6 text-[#636366]">
+                {body}
+              </p>
             </article>
           ))}
         </div>
@@ -314,10 +431,16 @@ export function PublicHome() {
 
       <section className="relative mx-auto grid max-w-6xl gap-5 py-10 lg:grid-cols-[1.05fr_.95fr] lg:items-center">
         <div>
-          <p className="text-xs font-black uppercase tracking-[0.16em] text-[#af52de]">Privacy and control</p>
-          <h2 className="mt-2 text-3xl font-semibold tracking-tight md:text-5xl">Your planning data should feel organized, not exposed.</h2>
+          <p className="text-xs font-black uppercase tracking-[0.16em] text-[#af52de]">
+            Privacy and control
+          </p>
+          <h2 className="mt-2 text-3xl font-semibold tracking-tight md:text-5xl">
+            Your planning data should feel organized, not exposed.
+          </h2>
           <p className="mt-4 max-w-xl text-sm font-semibold leading-6 text-[#636366] md:text-base">
-            Arcgenda keeps AI Lite optional, separates shared calendars from personal ones, and makes device notification support clear instead of promising magic smoke.
+            Arcgenda keeps AI Lite optional, separates shared calendars from
+            personal ones, and makes device notification support clear instead
+            of promising magic smoke.
           </p>
           <div className="mt-5 grid gap-3 sm:grid-cols-2">
             {[
@@ -328,7 +451,10 @@ export function PublicHome() {
             ].map(([Icon, label]) => {
               const TypedIcon = Icon as typeof Shield;
               return (
-                <div key={label as string} className="flex items-center gap-3 rounded-3xl bg-white/70 p-3 text-sm font-bold shadow-lg shadow-black/5 backdrop-blur-xl">
+                <div
+                  key={label as string}
+                  className="flex items-center gap-3 rounded-3xl bg-white/70 p-3 text-sm font-bold shadow-lg shadow-black/5 backdrop-blur-xl"
+                >
                   <TypedIcon className="text-[#007aff]" size={18} />
                   {label as string}
                 </div>
@@ -338,15 +464,27 @@ export function PublicHome() {
         </div>
         <GlassCard>
           <div className="flex items-center gap-3">
-            <span className="grid size-12 place-items-center rounded-full bg-[#e9fbea] text-[#34c759]"><Shield size={21} /></span>
+            <span className="grid size-12 place-items-center rounded-full bg-[#e9fbea] text-[#34c759]">
+              <Shield size={21} />
+            </span>
             <div>
               <p className="text-sm font-bold text-[#8e8e93]">Trust panel</p>
-              <h3 className="text-2xl font-semibold">Clear settings, fewer surprises</h3>
+              <h3 className="text-2xl font-semibold">
+                Clear settings, fewer surprises
+              </h3>
             </div>
           </div>
           <div className="mt-5 space-y-3">
-            {["Quiet hours pause interruptions", "Device toggles reflect browser support", "Push setup explains VAPID + scheduler", "Theme comes from saved user settings"].map((item) => (
-              <div key={item} className="flex items-center gap-3 rounded-3xl bg-white/80 p-3 text-sm font-bold shadow-lg shadow-black/5">
+            {[
+              "Quiet hours pause interruptions",
+              "Device toggles reflect browser support",
+              "Push setup explains VAPID + scheduler",
+              "Theme comes from saved user settings",
+            ].map((item) => (
+              <div
+                key={item}
+                className="flex items-center gap-3 rounded-3xl bg-white/80 p-3 text-sm font-bold shadow-lg shadow-black/5"
+              >
                 <CheckCircle2 size={16} className="text-[#34c759]" />
                 {item}
               </div>
@@ -358,20 +496,32 @@ export function PublicHome() {
       <section className="relative mx-auto grid max-w-6xl gap-5 py-10 lg:grid-cols-[.95fr_1.05fr] lg:items-center">
         <PhonePreview />
         <div>
-          <p className="text-xs font-black uppercase tracking-[0.16em] text-[#af52de]">Install like an app</p>
-          <h2 className="mt-2 text-3xl font-semibold tracking-tight md:text-5xl">Use Arcgenda from your home screen.</h2>
+          <p className="text-xs font-black uppercase tracking-[0.16em] text-[#af52de]">
+            Install like an app
+          </p>
+          <h2 className="mt-2 text-3xl font-semibold tracking-tight md:text-5xl">
+            Use Arcgenda from your home screen.
+          </h2>
           <p className="mt-4 max-w-xl text-sm font-semibold leading-6 text-[#636366] md:text-base">
-            Arcgenda is prepared as a PWA for mobile and desktop. The app explains what each device supports so notifications and install steps do not feel like a haunted settings maze.
+            Arcgenda is prepared as a PWA for mobile and desktop. The app
+            explains what each device supports so notifications and install
+            steps do not feel like a haunted settings maze.
           </p>
           <div className="mt-5 grid gap-3">
             {installNotes.map((note) => (
-              <div key={note} className="flex items-center gap-3 rounded-3xl bg-white/70 p-3 text-sm font-bold shadow-lg shadow-black/5 backdrop-blur-xl">
+              <div
+                key={note}
+                className="flex items-center gap-3 rounded-3xl bg-white/70 p-3 text-sm font-bold shadow-lg shadow-black/5 backdrop-blur-xl"
+              >
                 <Smartphone className="text-[#007aff]" size={18} />
                 {note}
               </div>
             ))}
           </div>
-          <Link href="/get-app" className="mt-6 inline-flex rounded-full bg-[#007aff] px-6 py-3 text-base font-bold text-white shadow-lg shadow-[#007aff]/25 transition active:scale-95">
+          <Link
+            href="/get-app"
+            className="mt-6 inline-flex rounded-full bg-[#007aff] px-6 py-3 text-base font-bold text-white shadow-lg shadow-[#007aff]/25 transition active:scale-95"
+          >
             Get App instructions
           </Link>
         </div>
@@ -382,15 +532,36 @@ export function PublicHome() {
           <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(0,122,255,.35),transparent_32%),radial-gradient(circle_at_bottom_right,rgba(255,45,85,.28),transparent_30%)]" />
           <div className="relative">
             <BrandMark size="lg" className="justify-center" />
-            <p className="mt-4 text-sm font-black uppercase tracking-[0.16em] text-white/50">Free to start</p>
-            <h2 className="mx-auto mt-2 max-w-3xl text-3xl font-semibold tracking-tight md:text-5xl">Open a cleaner calendar, then let the little chaos goblins retire.</h2>
+            <p className="mt-4 text-sm font-black uppercase tracking-[0.16em] text-white/50">
+              Free to start
+            </p>
+            <h2 className="mx-auto mt-2 max-w-3xl text-3xl font-semibold tracking-tight md:text-5xl">
+              Open a cleaner calendar, then let the little chaos goblins retire.
+            </h2>
             <p className="mx-auto mt-4 max-w-2xl text-sm font-semibold leading-6 text-white/70 md:text-base">
-              Build your calendars, link tasks, save reminders, review patterns, and keep your week visible without showing fake data before your workspace loads.
+              Build your calendars, link tasks, save reminders, review patterns,
+              and keep your week visible without showing fake data before your
+              workspace loads.
             </p>
             <div className="mt-7 flex flex-wrap justify-center gap-3">
-              <Link href="/signup" className="rounded-full bg-white px-6 py-3 text-base font-bold text-[#1d1d1f] transition active:scale-95">Start free</Link>
-              <Link href="/login" className="rounded-full bg-white/10 px-6 py-3 text-base font-bold text-white transition active:scale-95">Log in</Link>
-              <Link href="/features" className="rounded-full bg-white/10 px-6 py-3 text-base font-bold text-white transition active:scale-95">View features</Link>
+              <Link
+                href="/signup"
+                className="rounded-full bg-white px-6 py-3 text-base font-bold text-[#1d1d1f] transition active:scale-95"
+              >
+                Start free
+              </Link>
+              <Link
+                href="/login"
+                className="rounded-full bg-white/10 px-6 py-3 text-base font-bold text-white transition active:scale-95"
+              >
+                Log in
+              </Link>
+              <Link
+                href="/features"
+                className="rounded-full bg-white/10 px-6 py-3 text-base font-bold text-white transition active:scale-95"
+              >
+                View features
+              </Link>
             </div>
           </div>
         </div>

@@ -29,24 +29,28 @@ export function PublicNavbar({ activeHref }: { activeHref?: string }) {
         </Link>
         <div className="hidden items-center gap-1 lg:flex">
           {publicNavLinks.map((link) => (
-            <Link key={link.href} href={link.href} className={linkClass(link.href, activeHref)}>
+            <Link
+              key={link.href}
+              href={link.href}
+              className={linkClass(link.href, activeHref)}
+            >
               {link.label}
             </Link>
           ))}
         </div>
         <div className="hidden items-center gap-2 sm:flex">
-          <Link
+          <a
             href="/login"
-            className="rounded-full bg-white/85 px-4 py-2 text-sm font-bold text-[#007aff] shadow-sm"
+            className="relative z-10 rounded-full bg-white/85 px-4 py-2 text-sm font-bold text-[#007aff] shadow-sm"
           >
             Log in
-          </Link>
-          <Link
+          </a>
+          <a
             href="/signup"
-            className="rounded-full bg-[#007aff] px-4 py-2 text-sm font-bold text-white shadow-lg shadow-[#007aff]/25"
+            className="relative z-10 rounded-full bg-[#007aff] px-4 py-2 text-sm font-bold text-white shadow-lg shadow-[#007aff]/25"
           >
             Sign up
-          </Link>
+          </a>
         </div>
         <PublicMobileMenu links={publicNavLinks} />
       </div>

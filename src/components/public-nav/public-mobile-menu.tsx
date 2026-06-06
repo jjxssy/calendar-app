@@ -35,7 +35,6 @@ export function PublicMobileMenu({ links }: { links: PublicNavLink[] }) {
             <Link
               key={link.href}
               href={link.href}
-              onClick={() => setOpen(false)}
               className={`rounded-2xl px-4 py-3 text-sm font-bold ${
                 isActive(pathname, link.href)
                   ? "bg-[#1d1d1f] text-white"
@@ -46,20 +45,18 @@ export function PublicMobileMenu({ links }: { links: PublicNavLink[] }) {
             </Link>
           ))}
           <div className="grid grid-cols-2 gap-2 pt-1">
-            <Link
+            <a
               href="/login"
-              onClick={() => setOpen(false)}
-              className="rounded-2xl bg-[#e5f1ff] px-4 py-3 text-center text-sm font-bold text-[#007aff]"
+              className="relative z-10 rounded-2xl bg-[#e5f1ff] px-4 py-3 text-center text-sm font-bold text-[#007aff]"
             >
               Log in
-            </Link>
-            <Link
+            </a>
+            <a
               href="/signup"
-              onClick={() => setOpen(false)}
-              className="rounded-2xl bg-[#007aff] px-4 py-3 text-center text-sm font-bold text-white"
+              className="relative z-10 rounded-2xl bg-[#007aff] px-4 py-3 text-center text-sm font-bold text-white"
             >
               Sign up
-            </Link>
+            </a>
           </div>
         </div>
       )}
