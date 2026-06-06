@@ -598,12 +598,9 @@ function mapStandaloneTask(task: DbTask, today: Date): StandaloneTask {
 
   const dateSource =
     task.dueDate ??
-    firstReminder?.remindAt ??
-    task.createdAt ??
     task.event?.startDate ??
+    task.createdAt ??
     null;
-
-  const reminderSource = task.dueDate ?? firstReminder?.remindAt ?? null;
 
   return {
     id: task.id,
@@ -611,12 +608,13 @@ function mapStandaloneTask(task: DbTask, today: Date): StandaloneTask {
     done: task.completed,
     date: dateSource ? dateKeyFromDbDate(dateSource) : toDateKey(today),
     time: dateSource ? timeValueFromDbDate(dateSource) : undefined,
-    reminderDate: reminderSource
-      ? dateKeyFromDbDate(reminderSource)
-      : undefined,
-    reminderTime: reminderSource
-      ? timeValueFromDbDate(reminderSource)
-      : undefined,
+
+    // Important:
+    // reminderDate/reminderTime must come from real Reminder rows only.
+    // dueDate is just the task's date/time, not automatically a notification.
+    reminderDate: firstReminder ? dateKeyFromDbDate(firstReminder.remindAt) : undefined,
+    reminderTime: firstReminder ? timeValueFromDbDate(firstReminder.remindAt) : undefined,
+
     eventId: task.eventId ?? null,
     eventTitle: task.event?.title ?? "Standalone task",
     notificationSentAt: firstReminder?.notificationSentAt ?? null,
@@ -1889,68 +1887,120 @@ export default function CalendarDashboard() {
     setComposerOpen(true);
   }
 
-  async function saveTask(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+ async function saveTask(event: FormEvent<HTMLFormElement>) {
+  event.preventDefault();
 
-    if (composerSubmitting) return;
+  if (composerSubmitting) return;
 
-    const title = taskDraft.title.trim();
+  const title = taskDraft.title.trim();
 
-    if (!title) {
-      setWorkspaceMessage("Task title is required.");
-      return;
-    }
+  if (!title) {
+    setWorkspaceMessage("Task title is required.");
+    return;
+  }
 
-    const eventId =
-      taskDraft.eventId && taskDraft.eventId !== "none"
-        ? taskDraft.eventId
-        : undefined;
-
-    const dueDate = taskDraft.reminderEnabled
-      ? `${taskDraft.reminderDate}T${taskDraft.reminderTime}:00`
+  const eventId =
+    taskDraft.eventId && taskDraft.eventId !== "none"
+      ? taskDraft.eventId
       : undefined;
 
-    if (
-      taskDraft.reminderEnabled &&
-      !isFutureDateTime(taskDraft.reminderDate, taskDraft.reminderTime)
-    ) {
-      setWorkspaceMessage("Choose a future reminder time for this task.");
-      return;
-    }
+  const taskDate = taskDraft.reminderDate || toDateKey(selectedDate);
+  const taskTime = taskDraft.reminderTime || currentTimeValue();
 
-    setComposerSubmitting(true);
-    markWorkspaceMutation();
+  const dueDate = `${taskDate}T${taskTime}:00`;
 
-    try {
-      await apiJson<{ task: DbTask }>("/api/tasks", {
+  if (
+    taskDraft.reminderEnabled &&
+    !isFutureDateTime(taskDate, taskTime)
+  ) {
+    setWorkspaceMessage("Choose a future reminder time for this task.");
+    return;
+  }
+
+  const tempId = `temp-task-${createId()}`;
+
+  const optimisticTask: StandaloneTask = {
+    id: tempId,
+    title,
+    done: false,
+    date: taskDate,
+    time: taskTime,
+    reminderDate: taskDraft.reminderEnabled ? taskDate : undefined,
+    reminderTime: taskDraft.reminderEnabled ? taskTime : undefined,
+    eventId: eventId ?? null,
+    eventTitle: eventId
+      ? events.find((item) => item.id === eventId)?.title ?? "Linked event"
+      : "Standalone task",
+    notificationSentAt: null,
+  };
+
+  const previousTasks = standaloneTasks;
+  const previousEvents = events;
+
+  setComposerSubmitting(true);
+  markWorkspaceMutation();
+
+  if (eventId) {
+    setEvents((current) =>
+      current.map((calendarEvent) =>
+        calendarEvent.id === eventId
+          ? {
+              ...calendarEvent,
+              tasks: [
+                ...calendarEvent.tasks,
+                { id: tempId, title, done: false },
+              ],
+            }
+          : calendarEvent,
+      ),
+    );
+  } else {
+    setStandaloneTasks((current) => [optimisticTask, ...current]);
+  }
+
+  try {
+    const payload = await apiJson<{ task: DbTask }>("/api/tasks", {
+      method: "POST",
+      body: JSON.stringify({
+        title,
+        eventId,
+        dueDate,
+      }),
+    });
+
+    if (taskDraft.reminderEnabled) {
+      await apiJson("/api/reminders", {
         method: "POST",
         body: JSON.stringify({
-          title,
-          eventId,
-          dueDate,
+          taskId: payload.task.id,
+          title: `Task reminder: ${title}`,
+          remindAt: dueDate,
         }),
       });
-
-      await refreshSchedule("Task created.");
-
-      setTaskDraft({
-        title: "",
-        reminderEnabled: false,
-        reminderDate: toDateKey(selectedDate),
-        reminderTime: currentTimeValue(),
-        eventId: "none",
-      });
-
-      setComposerOpen(false);
-      setActiveTab("tasks");
-    } catch (error) {
-      setWorkspaceMessage(
-        error instanceof Error ? error.message : "Could not create task.",
-      );
-    } finally {
-      setComposerSubmitting(false);
     }
+
+    await refreshSchedule("Task created.");
+
+    setTaskDraft({
+      title: "",
+      reminderEnabled: false,
+      reminderDate: toDateKey(selectedDate),
+      reminderTime: currentTimeValue(),
+      eventId: "none",
+    });
+
+    setComposerOpen(false);
+    setActiveTab("tasks");
+  } catch (error) {
+    setStandaloneTasks(previousTasks);
+    setEvents(previousEvents);
+    setWorkspaceMessage(
+      error instanceof Error ? error.message : "Could not create task.",
+    );
+  } finally {
+    setComposerSubmitting(false);
   }
+}
 
   async function saveEvent(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -5397,11 +5447,12 @@ function EventComposer({
               </select>
             </FieldLabel>
             <button
-              disabled={submitting}
-              className="mt-4 h-12 w-full rounded-full bg-[#007aff] text-base font-bold text-white shadow-lg shadow-[#007aff]/25 transition active:scale-95 disabled:opacity-55"
-            >
-              {submitting ? "Creating..." : "Create task"}
-            </button>
+  type="submit"
+  disabled={submitting}
+  className="mt-4 h-12 w-full rounded-full bg-[#007aff] text-base font-bold text-white shadow-lg shadow-[#007aff]/25 transition active:scale-95 disabled:opacity-55"
+>
+  {submitting ? "Creating..." : "Create task"}
+</button>
           </div>
         ) : (
           <>
