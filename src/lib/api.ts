@@ -2,6 +2,9 @@ export type SessionUser = {
   id?: string;
   email: string;
   name?: string;
+  plan?: "free" | "premium";
+  premium?: boolean;
+  premiumUntil?: string | null;
 };
 
 export type AppSession = {

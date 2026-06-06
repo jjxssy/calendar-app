@@ -55,6 +55,8 @@ model User {
   name      String?
   theme     String     @default("system")
   skipIntro Boolean    @default(false)
+  plan      String     @default("free")
+  premiumUntil DateTime?
   createdAt DateTime   @default(now())
   updatedAt DateTime   @updatedAt
 

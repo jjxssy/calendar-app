@@ -72,6 +72,7 @@ import { BrandMark } from "@/components/brand/brand-mark";
 type AppTab = "calendar" | "tasks" | "alerts" | "stats" | "settings";
 type ComposerKind = "event" | "task";
 type TaskView = "day" | "week" | "month";
+type StatsRange = "daily" | "monthly" | "yearly";
 type ReminderPreset = "5m" | "10m" | "30m" | "1h" | "1d" | "custom";
 type CancelScope = "series-cancel" | "series-delete";
 type SettingsSectionId =
@@ -597,10 +598,7 @@ function mapStandaloneTask(task: DbTask, today: Date): StandaloneTask {
     .sort((a, b) => a.remindAt.localeCompare(b.remindAt))[0];
 
   const dateSource =
-    task.dueDate ??
-    task.event?.startDate ??
-    task.createdAt ??
-    null;
+    task.dueDate ?? task.event?.startDate ?? task.createdAt ?? null;
 
   return {
     id: task.id,
@@ -612,8 +610,12 @@ function mapStandaloneTask(task: DbTask, today: Date): StandaloneTask {
     // Important:
     // reminderDate/reminderTime must come from real Reminder rows only.
     // dueDate is just the task's date/time, not automatically a notification.
-    reminderDate: firstReminder ? dateKeyFromDbDate(firstReminder.remindAt) : undefined,
-    reminderTime: firstReminder ? timeValueFromDbDate(firstReminder.remindAt) : undefined,
+    reminderDate: firstReminder
+      ? dateKeyFromDbDate(firstReminder.remindAt)
+      : undefined,
+    reminderTime: firstReminder
+      ? timeValueFromDbDate(firstReminder.remindAt)
+      : undefined,
 
     eventId: task.eventId ?? null,
     eventTitle: task.event?.title ?? "Standalone task",
@@ -860,6 +862,7 @@ export default function CalendarDashboard() {
   const [selectedDate, setSelectedDate] = useState(today);
   const [view, setView] = useState<CalendarView>("month");
   const [taskView, setTaskView] = useState<TaskView>("day");
+  const [statsRange, setStatsRange] = useState<StatsRange>("monthly");
   const [activeTab, setActiveTab] = useState<AppTab>("calendar");
   const [activeSettingsSection, setActiveSettingsSection] =
     useState<SettingsSectionId>("profile");
@@ -959,7 +962,6 @@ export default function CalendarDashboard() {
   const [deleteAccountText, setDeleteAccountText] = useState("");
   const [introOpen, setIntroOpen] = useState(false);
   const [introSaving, setIntroSaving] = useState(false);
-
   const selectedKey = toDateKey(selectedDate);
   const monthDays = useMemo(() => getMonthDays(visibleMonth), [visibleMonth]);
   const tagMap = useMemo(
@@ -1172,9 +1174,65 @@ export default function CalendarDashboard() {
     () => standaloneTasks.filter((task) => !task.done && !task.eventId),
     [standaloneTasks],
   );
+
+  const isPremium = session?.user.premium === true;
+
+  const statsContext = useMemo(() => {
+    const selectedYear = selectedKey.slice(0, 4);
+    const selectedMonth = selectedKey.slice(0, 7);
+
+    const activeRange: StatsRange = isPremium ? statsRange : "monthly";
+
+    if (activeRange === "daily") {
+      return {
+        range: activeRange,
+        label: selectedDate.toLocaleDateString("en-US", {
+          weekday: "long",
+          month: "long",
+          day: "numeric",
+          year: "numeric",
+        }),
+        events: filteredEvents.filter((event) => event.date === selectedKey),
+        tasks: taskItems.filter((task) => task.date === selectedKey),
+      };
+    }
+
+    if (activeRange === "yearly") {
+      return {
+        range: activeRange,
+        label: selectedYear,
+        events: filteredEvents.filter((event) =>
+          event.date.startsWith(selectedYear),
+        ),
+        tasks: taskItems.filter((task) => task.date.startsWith(selectedYear)),
+      };
+    }
+
+    const monthDate = fromDateKey(`${selectedMonth}-01`);
+
+    return {
+      range: "monthly" as const,
+      label: monthDate.toLocaleDateString("en-US", {
+        month: "long",
+        year: "numeric",
+      }),
+      events: filteredEvents.filter((event) =>
+        event.date.startsWith(selectedMonth),
+      ),
+      tasks: taskItems.filter((task) => task.date.startsWith(selectedMonth)),
+    };
+  }, [
+    filteredEvents,
+    isPremium,
+    selectedDate,
+    selectedKey,
+    statsRange,
+    taskItems,
+  ]);
+
   const stats = useMemo(
-    () => computeStats(filteredEvents, taskItems, tags),
-    [filteredEvents, taskItems, tags],
+    () => computeStats(statsContext.events, statsContext.tasks, tags),
+    [statsContext, tags],
   );
   const aiSuggestions = useMemo(
     () => buildAiSuggestions(stats, filteredEvents),
@@ -1185,6 +1243,12 @@ export default function CalendarDashboard() {
   useEffect(() => {
     alertItemsRef.current = alertItems;
   }, [alertItems]);
+
+  useEffect(() => {
+  if (!isPremium && statsRange !== "monthly") {
+    setStatsRange("monthly");
+  }
+}, [isPremium, statsRange]);
 
   function markBusy(action: string, busy: boolean) {
     setBusyActions((current) => {
@@ -1256,6 +1320,9 @@ export default function CalendarDashboard() {
           user: AppSession["user"] & {
             theme?: AppSettings["theme"];
             skipIntro?: boolean | null;
+            plan?: "free" | "premium";
+            premium?: boolean;
+            premiumUntil?: string | null;
           };
         }>("/api/users/me"),
         apiJson<{ calendars: DbCalendar[]; limit: number }>("/api/calendars"),
@@ -1887,120 +1954,117 @@ export default function CalendarDashboard() {
     setComposerOpen(true);
   }
 
- async function saveTask(event: FormEvent<HTMLFormElement>) {
-  event.preventDefault();
+  async function saveTask(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
 
-  if (composerSubmitting) return;
+    if (composerSubmitting) return;
 
-  const title = taskDraft.title.trim();
+    const title = taskDraft.title.trim();
 
-  if (!title) {
-    setWorkspaceMessage("Task title is required.");
-    return;
-  }
-
-  const eventId =
-    taskDraft.eventId && taskDraft.eventId !== "none"
-      ? taskDraft.eventId
-      : undefined;
-
-  const taskDate = taskDraft.reminderDate || toDateKey(selectedDate);
-  const taskTime = taskDraft.reminderTime || currentTimeValue();
-
-  const dueDate = `${taskDate}T${taskTime}:00`;
-
-  if (
-    taskDraft.reminderEnabled &&
-    !isFutureDateTime(taskDate, taskTime)
-  ) {
-    setWorkspaceMessage("Choose a future reminder time for this task.");
-    return;
-  }
-
-  const tempId = `temp-task-${createId()}`;
-
-  const optimisticTask: StandaloneTask = {
-    id: tempId,
-    title,
-    done: false,
-    date: taskDate,
-    time: taskTime,
-    reminderDate: taskDraft.reminderEnabled ? taskDate : undefined,
-    reminderTime: taskDraft.reminderEnabled ? taskTime : undefined,
-    eventId: eventId ?? null,
-    eventTitle: eventId
-      ? events.find((item) => item.id === eventId)?.title ?? "Linked event"
-      : "Standalone task",
-    notificationSentAt: null,
-  };
-
-  const previousTasks = standaloneTasks;
-  const previousEvents = events;
-
-  setComposerSubmitting(true);
-  markWorkspaceMutation();
-
-  if (eventId) {
-    setEvents((current) =>
-      current.map((calendarEvent) =>
-        calendarEvent.id === eventId
-          ? {
-              ...calendarEvent,
-              tasks: [
-                ...calendarEvent.tasks,
-                { id: tempId, title, done: false },
-              ],
-            }
-          : calendarEvent,
-      ),
-    );
-  } else {
-    setStandaloneTasks((current) => [optimisticTask, ...current]);
-  }
-
-  try {
-    const payload = await apiJson<{ task: DbTask }>("/api/tasks", {
-      method: "POST",
-      body: JSON.stringify({
-        title,
-        eventId,
-        dueDate,
-      }),
-    });
-
-    if (taskDraft.reminderEnabled) {
-      await apiJson("/api/reminders", {
-        method: "POST",
-        body: JSON.stringify({
-          taskId: payload.task.id,
-          title: `Task reminder: ${title}`,
-          remindAt: dueDate,
-        }),
-      });
+    if (!title) {
+      setWorkspaceMessage("Task title is required.");
+      return;
     }
 
-    await refreshSchedule("Task created.");
+    const eventId =
+      taskDraft.eventId && taskDraft.eventId !== "none"
+        ? taskDraft.eventId
+        : undefined;
 
-    setTaskDraft({
-      title: "",
-      reminderEnabled: false,
-      reminderDate: toDateKey(selectedDate),
-      reminderTime: currentTimeValue(),
-      eventId: "none",
-    });
+    const taskDate = taskDraft.reminderDate || toDateKey(selectedDate);
+    const taskTime = taskDraft.reminderTime || currentTimeValue();
 
-    setComposerOpen(false);
-    setActiveTab("tasks");
-  } catch (error) {
-    setStandaloneTasks(previousTasks);
-    setEvents(previousEvents);
-    setWorkspaceMessage(
-      error instanceof Error ? error.message : "Could not create task.",
-    );
-  } finally {
-    setComposerSubmitting(false);
+    const dueDate = `${taskDate}T${taskTime}:00`;
+
+    if (taskDraft.reminderEnabled && !isFutureDateTime(taskDate, taskTime)) {
+      setWorkspaceMessage("Choose a future reminder time for this task.");
+      return;
+    }
+
+    const tempId = `temp-task-${createId()}`;
+
+    const optimisticTask: StandaloneTask = {
+      id: tempId,
+      title,
+      done: false,
+      date: taskDate,
+      time: taskTime,
+      reminderDate: taskDraft.reminderEnabled ? taskDate : undefined,
+      reminderTime: taskDraft.reminderEnabled ? taskTime : undefined,
+      eventId: eventId ?? null,
+      eventTitle: eventId
+        ? (events.find((item) => item.id === eventId)?.title ?? "Linked event")
+        : "Standalone task",
+      notificationSentAt: null,
+    };
+
+    const previousTasks = standaloneTasks;
+    const previousEvents = events;
+
+    setComposerSubmitting(true);
+    markWorkspaceMutation();
+
+    if (eventId) {
+      setEvents((current) =>
+        current.map((calendarEvent) =>
+          calendarEvent.id === eventId
+            ? {
+                ...calendarEvent,
+                tasks: [
+                  ...calendarEvent.tasks,
+                  { id: tempId, title, done: false },
+                ],
+              }
+            : calendarEvent,
+        ),
+      );
+    } else {
+      setStandaloneTasks((current) => [optimisticTask, ...current]);
+    }
+
+    try {
+      const payload = await apiJson<{ task: DbTask }>("/api/tasks", {
+        method: "POST",
+        body: JSON.stringify({
+          title,
+          eventId,
+          dueDate,
+        }),
+      });
+
+      if (taskDraft.reminderEnabled) {
+        await apiJson("/api/reminders", {
+          method: "POST",
+          body: JSON.stringify({
+            taskId: payload.task.id,
+            title: `Task reminder: ${title}`,
+            remindAt: dueDate,
+          }),
+        });
+      }
+
+      await refreshSchedule("Task created.");
+
+      setTaskDraft({
+        title: "",
+        reminderEnabled: false,
+        reminderDate: toDateKey(selectedDate),
+        reminderTime: currentTimeValue(),
+        eventId: "none",
+      });
+
+      setComposerOpen(false);
+      setActiveTab("tasks");
+    } catch (error) {
+      setStandaloneTasks(previousTasks);
+      setEvents(previousEvents);
+      setWorkspaceMessage(
+        error instanceof Error ? error.message : "Could not create task.",
+      );
+    } finally {
+      setComposerSubmitting(false);
+    }
   }
-}
 
   async function saveEvent(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -2870,6 +2934,9 @@ export default function CalendarDashboard() {
           user: AppSession["user"] & {
             theme?: AppSettings["theme"];
             skipIntro?: boolean | null;
+            plan?: "free" | "premium";
+            premium?: boolean;
+            premiumUntil?: string | null;
           };
         }>("/api/users/me", {
           method: "PATCH",
@@ -2961,6 +3028,9 @@ export default function CalendarDashboard() {
         user: AppSession["user"] & {
           theme?: AppSettings["theme"];
           skipIntro?: boolean | null;
+          plan?: "free" | "premium";
+          premium?: boolean;
+          premiumUntil?: string | null;
         };
       }>("/api/users/me", {
         method: "PATCH",
@@ -3268,6 +3338,10 @@ export default function CalendarDashboard() {
             {activeTab === "stats" && (
               <StatsTab
                 stats={stats}
+                statsRange={statsContext.range}
+                setStatsRange={setStatsRange}
+                statsPeriodLabel={statsContext.label}
+                isPremium={isPremium}
                 aiSuggestions={aiSuggestions}
                 aiEnabled={settings.ai.enabled}
               />
@@ -4412,60 +4486,143 @@ function AlertsTab({ alerts }: { alerts: RescheduleReminder[] }) {
 
 function StatsTab({
   stats,
+  statsRange,
+  setStatsRange,
+  statsPeriodLabel,
+  isPremium,
   aiSuggestions,
   aiEnabled,
 }: {
   stats: ReturnType<typeof computeStats>;
+  statsRange: StatsRange;
+  setStatsRange: (range: StatsRange) => void;
+  statsPeriodLabel: string;
+  isPremium: boolean;
   aiSuggestions: string[];
   aiEnabled: boolean;
 }) {
+  const rangeLabel =
+    statsRange === "daily"
+      ? "Daily"
+      : statsRange === "yearly"
+        ? "Yearly"
+        : "Monthly";
+
+  function selectRange(range: StatsRange) {
+    if (!isPremium && range !== "monthly") return;
+    setStatsRange(range);
+  }
+
   return (
     <section className="space-y-3">
       <SectionTitle
-        eyebrow="Free stats"
-        title="Progress dashboard"
-        count={stats.totalEvents}
+        eyebrow={`${rangeLabel} stats`}
+        title={statsPeriodLabel}
+        count={stats.totalEvents + stats.totalTasks}
       />
-      <div className="grid grid-cols-2 gap-3">
-        <Stat label="Events" value={stats.totalEvents} />
-        <Stat label="Done" value={stats.completedEvents} />
-        <Stat label="Cancelled" value={stats.cancelledEvents} />
-        <Stat label="Upcoming" value={stats.upcomingEvents} />
+
+      <div className="grid grid-cols-3 gap-2 rounded-full bg-white/60 p-1 text-xs font-black shadow-sm backdrop-blur-xl">
+        {(["daily", "monthly", "yearly"] as StatsRange[]).map((range) => {
+          const locked = !isPremium && range !== "monthly";
+          const selected = statsRange === range;
+
+          return (
+            <button
+              key={range}
+              type="button"
+              disabled={locked}
+              onClick={() => selectRange(range)}
+              className={[
+                "h-9 rounded-full capitalize transition active:scale-95",
+                selected
+                  ? "bg-[#1d1d1f] text-white shadow-lg shadow-black/15"
+                  : "text-[#636366]",
+                locked ? "cursor-not-allowed opacity-55" : "",
+              ].join(" ")}
+              title={locked ? "Premium" : `${range} stats`}
+            >
+              {range}
+              {locked ? " 🔒" : ""}
+            </button>
+          );
+        })}
       </div>
+
       <div className="rounded-[28px] border border-white/60 bg-white/70 p-4 shadow-lg shadow-black/5 backdrop-blur-xl">
-        <p className="text-sm font-bold text-[#8e8e93]">Task completion</p>
+        <p className="text-sm font-black uppercase tracking-[0.14em] text-[#8e8e93]">
+          Snapshot
+        </p>
+        <p className="mt-2 text-sm font-semibold leading-6 text-[#636366]">
+          <span className="font-black text-[#1d1d1f]">
+            {stats.upcomingEvents}
+          </span>{" "}
+          upcoming event{stats.upcomingEvents === 1 ? "" : "s"} and{" "}
+          <span className="font-black text-[#1d1d1f]">{stats.openTasks}</span>{" "}
+          open task{stats.openTasks === 1 ? "" : "s"}.
+        </p>
+      </div>
+
+      <div className="grid grid-cols-2 gap-3">
+        <Stat label={`${rangeLabel} events`} value={stats.totalEvents} />
+        <Stat label="Upcoming events" value={stats.upcomingEvents} />
+        <Stat label="Open tasks" value={stats.openTasks} />
+        <Stat label="Completed tasks" value={stats.completedTasks} />
+      </div>
+
+      <div className="rounded-[28px] border border-white/60 bg-white/70 p-4 shadow-lg shadow-black/5 backdrop-blur-xl">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <p className="text-sm font-bold text-[#8e8e93]">Task progress</p>
+            <p className="mt-1 text-2xl font-black text-[#1d1d1f]">
+              {stats.taskCompletionRate}%
+            </p>
+          </div>
+
+          <p className="rounded-full bg-white/80 px-3 py-1 text-xs font-black text-[#34c759] shadow-sm">
+            {stats.completedTasks}/{stats.totalTasks} done
+          </p>
+        </div>
+
         <div className="mt-3 h-3 rounded-full bg-[#f2f2f7]">
           <div
             className="h-3 rounded-full bg-[#34c759]"
             style={{ width: `${stats.taskCompletionRate}%` }}
           />
         </div>
-        <p className="mt-2 text-sm font-bold text-[#636366]">
-          {stats.taskCompletionRate}% complete
-        </p>
       </div>
+
       <div className="rounded-[28px] border border-white/60 bg-white/70 p-4 shadow-lg shadow-black/5 backdrop-blur-xl">
         <p className="text-sm font-bold text-[#8e8e93]">Patterns</p>
+
         <p className="mt-2 text-sm font-semibold">
           Most used tag: {stats.mostUsedCategory}
         </p>
+
         <p className="mt-1 text-sm font-semibold">
           Most active day: {stats.mostActiveDay}
         </p>
+
+        <p className="mt-1 text-sm font-semibold">
+          Cancelled events: {stats.cancelledEvents}
+        </p>
+
         <p className="mt-3 text-sm font-semibold text-[#636366]">
           {stats.monthlySummary}
         </p>
       </div>
+
       <div className="rounded-[28px] border border-white/60 bg-white/70 p-4 shadow-lg shadow-black/5 backdrop-blur-xl">
         <div className="flex items-center gap-2">
           <Brain size={18} className="text-[#af52de]" />
           <p className="text-sm font-bold text-[#8e8e93]">AI Lite</p>
         </div>
+
         <p className="mt-2 text-sm font-semibold text-[#636366]">
           {aiEnabled
             ? "Rule-based suggestions are generated locally from your visible calendar state."
             : "AI Lite is disabled by default. Enable it in Settings to see local rule-based insights."}
         </p>
+
         {aiEnabled && (
           <div className="mt-3 space-y-2">
             {aiSuggestions.map((suggestion) => (
@@ -5447,12 +5604,12 @@ function EventComposer({
               </select>
             </FieldLabel>
             <button
-  type="submit"
-  disabled={submitting}
-  className="mt-4 h-12 w-full rounded-full bg-[#007aff] text-base font-bold text-white shadow-lg shadow-[#007aff]/25 transition active:scale-95 disabled:opacity-55"
->
-  {submitting ? "Creating..." : "Create task"}
-</button>
+              type="submit"
+              disabled={submitting}
+              className="mt-4 h-12 w-full rounded-full bg-[#007aff] text-base font-bold text-white shadow-lg shadow-[#007aff]/25 transition active:scale-95 disabled:opacity-55"
+            >
+              {submitting ? "Creating..." : "Create task"}
+            </button>
           </div>
         ) : (
           <>

@@ -18,11 +18,29 @@ function normalizeTheme(value: unknown) {
   return "system";
 }
 
-function userPayload<T extends { theme?: string | null; skipIntro?: boolean | null }>(user: T) {
+function userPayload<
+  T extends {
+    theme?: string | null;
+    skipIntro?: boolean | null;
+    plan?: string | null;
+    premiumUntil?: Date | string | null;
+  },
+>(user: T) {
+  const premiumUntil = user.premiumUntil
+    ? new Date(user.premiumUntil)
+    : null;
+
+  const premiumActive =
+    user.plan === "premium" &&
+    (!premiumUntil || premiumUntil.getTime() > Date.now());
+
   return {
     ...user,
     theme: normalizeTheme(user.theme),
     skipIntro: user.skipIntro === true,
+    plan: premiumActive ? "premium" : "free",
+    premium: premiumActive,
+    premiumUntil: premiumUntil?.toISOString() ?? null,
   };
 }
 

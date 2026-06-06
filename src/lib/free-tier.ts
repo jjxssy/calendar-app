@@ -53,18 +53,6 @@ export type AppSettings = {
   ai: AiSettings;
 };
 
-export type CalendarStats = {
-  totalEvents: number;
-  completedEvents: number;
-  cancelledEvents: number;
-  upcomingEvents: number;
-  taskCompletionRate: number;
-  mostUsedCategory: string;
-  mostActiveDay: string;
-  weeklySummary: string;
-  monthlySummary: string;
-};
-
 export const defaultSettings: AppSettings = {
   theme: "system",
   skipIntro: false,
@@ -97,50 +85,96 @@ export const defaultSettings: AppSettings = {
   },
 };
 
+export type CalendarStats = {
+  totalEvents: number;
+  scheduledEvents: number;
+  completedEvents: number;
+  cancelledEvents: number;
+  upcomingEvents: number;
+  totalTasks: number;
+  openTasks: number;
+  completedTasks: number;
+  taskCompletionRate: number;
+  mostUsedCategory: string;
+  mostActiveDay: string;
+  weeklySummary: string;
+  monthlySummary: string;
+};
+
 export function computeStats(
   events: CalendarEvent[],
   tasks: Array<{ done: boolean }>,
   tags: CategoryStyle[],
 ): CalendarStats {
   const nowKey = new Date().toISOString().slice(0, 10);
-  const totalEvents = events.filter((event) => event.status !== "archived").length;
-  const completedEvents = events.filter((event) => event.status === "completed").length;
-  const cancelledEvents = events.filter((event) => event.status === "cancelled").length;
-  const upcomingEvents = events.filter(
+
+  const activeEvents = events.filter((event) => event.status !== "archived");
+  const scheduledEvents = activeEvents.filter(
+    (event) => event.status === "scheduled",
+  ).length;
+  const completedEvents = activeEvents.filter(
+    (event) => event.status === "completed",
+  ).length;
+  const cancelledEvents = activeEvents.filter(
+    (event) => event.status === "cancelled",
+  ).length;
+  const upcomingEvents = activeEvents.filter(
     (event) => event.status === "scheduled" && event.date >= nowKey,
   ).length;
+
+  const totalTasks = tasks.length;
   const completedTasks = tasks.filter((task) => task.done).length;
-  const taskCompletionRate = tasks.length
-    ? Math.round((completedTasks / tasks.length) * 100)
+  const openTasks = totalTasks - completedTasks;
+
+  const taskCompletionRate = totalTasks
+    ? Math.round((completedTasks / totalTasks) * 100)
     : 0;
-  const categoryCounts = events.reduce<Record<string, number>>((counts, event) => {
-    counts[event.category] = (counts[event.category] ?? 0) + 1;
-    return counts;
-  }, {});
+
+  const categoryCounts = activeEvents.reduce<Record<string, number>>(
+    (counts, event) => {
+      counts[event.category] = (counts[event.category] ?? 0) + 1;
+      return counts;
+    },
+    {},
+  );
+
   const mostUsedCategoryId =
-    Object.entries(categoryCounts).sort((a, b) => b[1] - a[1])[0]?.[0] ?? "none";
+    Object.entries(categoryCounts).sort((a, b) => b[1] - a[1])[0]?.[0] ??
+    "none";
+
   const mostUsedCategory =
-    tags.find((tag) => tag.id === mostUsedCategoryId)?.label ?? "No category yet";
-  const dayCounts = events.reduce<Record<string, number>>((counts, event) => {
-    const day = new Date(`${event.date}T12:00`).toLocaleDateString("en", {
-      weekday: "long",
-    });
-    counts[day] = (counts[day] ?? 0) + 1;
-    return counts;
-  }, {});
+    tags.find((tag) => tag.id === mostUsedCategoryId)?.label ??
+    "No category yet";
+
+  const dayCounts = activeEvents.reduce<Record<string, number>>(
+    (counts, event) => {
+      const day = new Date(`${event.date}T12:00`).toLocaleDateString("en", {
+        weekday: "long",
+      });
+      counts[day] = (counts[day] ?? 0) + 1;
+      return counts;
+    },
+    {},
+  );
+
   const mostActiveDay =
-    Object.entries(dayCounts).sort((a, b) => b[1] - a[1])[0]?.[0] ?? "No pattern yet";
+    Object.entries(dayCounts).sort((a, b) => b[1] - a[1])[0]?.[0] ??
+    "No pattern yet";
 
   return {
-    totalEvents,
+    totalEvents: activeEvents.length,
+    scheduledEvents,
     completedEvents,
     cancelledEvents,
     upcomingEvents,
+    totalTasks,
+    openTasks,
+    completedTasks,
     taskCompletionRate,
     mostUsedCategory,
     mostActiveDay,
-    weeklySummary: `${upcomingEvents} upcoming events and ${tasks.length - completedTasks} open tasks are on deck.`,
-    monthlySummary: `${totalEvents} events planned, ${cancelledEvents} cancelled, ${taskCompletionRate}% task completion.`,
+    weeklySummary: `${upcomingEvents} upcoming event${upcomingEvents === 1 ? "" : "s"} and ${openTasks} open task${openTasks === 1 ? "" : "s"}.`,
+    monthlySummary: `${activeEvents.length} event${activeEvents.length === 1 ? "" : "s"}, ${cancelledEvents} cancelled, ${taskCompletionRate}% task completion.`,
   };
 }
 
