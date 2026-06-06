@@ -4,6 +4,130 @@ Arcgenda Calendar is a colorful iPhone-style calendar and productivity PWA built
 
 It is designed as a private, account-based calendar workspace where users can manage calendars, events, tasks, reminders, settings, themes, and notifications from one clean app.
 
+## Quick Setup Cheat Sheet
+
+Use this when you forget what to type in the terminal. 🧷
+
+### First time setup
+
+```bash
+# 1. Go to the project folder
+cd calendar-app
+
+# 2. Install packages
+npm install
+
+# 3. Create your local environment file
+# macOS/Linux:
+touch .env.local
+
+# Windows PowerShell:
+New-Item .env.local
+
+# 4. Add your Supabase values to .env.local
+# NEXT_PUBLIC_SUPABASE_URL="https://your-project-ref.supabase.co"
+# NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY="your-publishable-key"
+# DATABASE_URL="your-private-supabase-postgres-url"
+
+# 5. Generate Prisma client
+npx prisma generate
+
+# 6. Push Prisma schema to Supabase
+npx prisma db push
+
+# 7. Enable Supabase RLS policies
+npx prisma db execute --file prisma/enable-rls.sql
+
+# 8. Start the app
+npm run dev
+```
+
+Open the app here:
+
+```text
+http://localhost:3000
+```
+
+### Normal daily start
+
+```bash
+cd calendar-app
+npm run dev
+```
+
+### After changing `prisma/schema.prisma`
+
+```bash
+npx prisma db push
+npx prisma generate
+npm run dev
+```
+
+### Before committing or deploying
+
+```bash
+npm run build
+```
+
+### Run production locally
+
+```bash
+npm run build
+npm start
+```
+
+### Clean restart when Next.js acts weird
+
+```bash
+# Stop the dev server first with Ctrl + C
+rm -rf .next
+npx prisma generate
+npm run dev
+```
+
+Windows PowerShell version:
+
+```powershell
+# Stop the dev server first with Ctrl + C
+Remove-Item -Recurse -Force .next
+npx prisma generate
+npm run dev
+```
+
+### If port 3000 is already in use
+
+Run the app on another port:
+
+```bash
+npm run dev -- -p 3001
+```
+
+Then open:
+
+```text
+http://localhost:3001
+```
+
+Or close the old terminal/server that is already using port `3000`.
+
+### Optional push notification keys
+
+Only needed if you want closed-app push reminders:
+
+```bash
+npx web-push generate-vapid-keys
+```
+
+Then add the keys to `.env.local`:
+
+```env
+NEXT_PUBLIC_VAPID_PUBLIC_KEY=""
+VAPID_PUBLIC_KEY=""
+VAPID_PRIVATE_KEY=""
+VAPID_SUBJECT="mailto:you@example.com"
+CRON_SECRET=""
+```
+
 ## Features
 
 - Account signup and login with Supabase Auth
@@ -303,6 +427,7 @@ npm start
 npx prisma generate
 npx prisma db push
 npx prisma db execute --file prisma/enable-rls.sql
+npx web-push generate-vapid-keys
 ```
 
 For a clean local restart:
@@ -310,6 +435,15 @@ For a clean local restart:
 ```bash
 # stop the dev server first with Ctrl + C
 rm -rf .next
+npx prisma generate
+npm run dev
+```
+
+Windows PowerShell:
+
+```powershell
+# stop the dev server first with Ctrl + C
+Remove-Item -Recurse -Force .next
 npx prisma generate
 npm run dev
 ```
@@ -354,9 +488,28 @@ rm -rf .next
 npm run dev
 ```
 
+Windows PowerShell:
+
+```powershell
+Remove-Item -Recurse -Force .next
+npm run dev
+```
+
 ### Prisma tries to connect to localhost
 
 Make sure `DATABASE_URL` is set in `.env.local` and points to Supabase, not a generated local Prisma Postgres URL.
+
+### `EADDRINUSE: address already in use :::3000`
+
+Port `3000` is already being used by another dev server.
+
+Use another port:
+
+```bash
+npm run dev -- -p 3001
+```
+
+Or stop the old terminal/server with `Ctrl + C`.
 
 ## Build for Production
 
