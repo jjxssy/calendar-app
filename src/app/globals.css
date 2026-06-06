@@ -194,17 +194,52 @@ html[data-theme="dark"] time {
   color: var(--muted);
 }
 
-html.dark input,
 html.dark textarea,
 html.dark select,
 html.dark .input-shell,
-html[data-theme="dark"] input,
 html[data-theme="dark"] textarea,
 html[data-theme="dark"] select,
 html[data-theme="dark"] .input-shell {
   background: var(--surface-muted) !important;
   color: var(--foreground) !important;
   border: 1px solid var(--border-soft) !important;
+}
+
+html.dark input:not(.arc-search-input),
+html[data-theme="dark"] input:not(.arc-search-input) {
+  background: var(--surface-muted) !important;
+  color: var(--foreground) !important;
+  border: 1px solid var(--border-soft) !important;
+}
+
+html.dark .arc-search-input,
+html[data-theme="dark"] .arc-search-input,
+.arc-search-shell .arc-search-input {
+  appearance: none !important;
+  -webkit-appearance: none !important;
+  border: 0 !important;
+  outline: 0 !important;
+  box-shadow: none !important;
+  background: transparent !important;
+  background-color: transparent !important;
+}
+
+html.dark .arc-search-input,
+html[data-theme="dark"] .arc-search-input {
+  color: #f5f7fb !important;
+}
+
+.arc-search-shell .arc-search-input {
+  color: #1d1d1f !important;
+}
+
+.arc-search-shell .arc-search-input::placeholder {
+  color: #9b9baa !important;
+}
+
+html.dark .arc-search-input::placeholder,
+html[data-theme="dark"] .arc-search-input::placeholder {
+  color: #8f96a8 !important;
 }
 
 html.dark input::placeholder,
@@ -332,56 +367,112 @@ html[data-theme="dark"] [class*="bg-[#1d1d1f]"] [class*="text-white/70"] {
 .input-shell {
   height: 3rem;
   border-radius: 1rem;
+  border: 1px solid rgba(15, 23, 42, 0.06);
   background: var(--surface-muted);
+  color: var(--foreground);
   padding-inline: 1rem;
   font-size: 0.875rem;
   font-weight: 600;
   outline: none;
+  transition:
+    background 160ms ease,
+    border-color 160ms ease,
+    box-shadow 160ms ease,
+    color 160ms ease;
 }
 
-.input-shell input {
-  appearance: none;
-  border: 0;
-  background: transparent;
-  outline: none;
-  box-shadow: none;
+.input-shell::placeholder {
+  color: rgba(99, 99, 102, 0.72);
 }
 
-.input-shell input:focus {
-  outline: none;
-  box-shadow: none;
-  border: 0;
+.input-shell:focus,
+.input-shell:focus-within {
+  border-color: rgba(122, 162, 255, 0.7);
+  box-shadow: 0 0 0 4px rgba(122, 162, 255, 0.14);
+  background: rgba(255, 255, 255, 0.96);
 }
 
+.dark .input-shell,
+[data-theme="dark"] .input-shell {
+  border-color: rgba(255, 255, 255, 0.08);
+  background: #10141c;
+  color: #f5f7fb;
+}
+
+.dark .input-shell::placeholder,
+[data-theme="dark"] .input-shell::placeholder {
+  color: #81889a;
+}
+
+.dark .input-shell:focus,
+.dark .input-shell:focus-within,
+[data-theme="dark"] .input-shell:focus,
+[data-theme="dark"] .input-shell:focus-within {
+  border-color: rgba(122, 162, 255, 0.62);
+  background: #131925;
+  box-shadow: 0 0 0 4px rgba(122, 162, 255, 0.16);
+}
+
+.input-shell input,
 .input-shell > input,
 .input-shell input[type="password"],
-.input-shell input[type="text"] {
+.input-shell input[type="text"],
+.input-shell input[type="email"],
+.input-shell input[type="date"],
+.input-shell input[type="time"] {
   appearance: none !important;
   -webkit-appearance: none !important;
   border: 0 !important;
   background: transparent !important;
   background-color: transparent !important;
+  color: inherit !important;
   outline: none !important;
   box-shadow: none !important;
 }
 
+.input-shell input:focus,
 .input-shell > input:focus,
 .input-shell input[type="password"]:focus,
-.input-shell input[type="text"]:focus {
+.input-shell input[type="text"]:focus,
+.input-shell input[type="email"]:focus,
+.input-shell input[type="date"]:focus,
+.input-shell input[type="time"]:focus {
   border: 0 !important;
   background: transparent !important;
   background-color: transparent !important;
   outline: none !important;
   box-shadow: none !important;
-  ring: 0 !important;
 }
 
 .input-shell > input:-webkit-autofill,
 .input-shell input[type="password"]:-webkit-autofill,
-.input-shell input[type="text"]:-webkit-autofill {
+.input-shell input[type="text"]:-webkit-autofill,
+.input-shell input[type="email"]:-webkit-autofill {
   -webkit-box-shadow: 0 0 0 1000px transparent inset !important;
   -webkit-text-fill-color: var(--foreground) !important;
+  caret-color: var(--foreground) !important;
   transition: background-color 9999s ease-in-out 0s !important;
+}
+
+.dark .input-shell > input:-webkit-autofill,
+.dark .input-shell input[type="password"]:-webkit-autofill,
+.dark .input-shell input[type="text"]:-webkit-autofill,
+.dark .input-shell input[type="email"]:-webkit-autofill,
+[data-theme="dark"] .input-shell > input:-webkit-autofill,
+[data-theme="dark"] .input-shell input[type="password"]:-webkit-autofill,
+[data-theme="dark"] .input-shell input[type="text"]:-webkit-autofill,
+[data-theme="dark"] .input-shell input[type="email"]:-webkit-autofill {
+  -webkit-text-fill-color: #f5f7fb !important;
+  caret-color: #f5f7fb !important;
+}
+
+@keyframes toastbar {
+  from {
+    transform: scaleX(1);
+  }
+  to {
+    transform: scaleX(0);
+  }
 }
 
 @media (display-mode: standalone) {

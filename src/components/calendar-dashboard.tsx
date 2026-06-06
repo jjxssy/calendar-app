@@ -272,6 +272,15 @@ type DbNotificationPreferences = {
   privateMode: boolean;
 };
 
+type ToastTone = "success" | "error" | "info" | "warning";
+
+type ToastItem = {
+  id: string;
+  message: string;
+  tone: ToastTone;
+  visible: boolean;
+};
+
 const viewOptions: CalendarView[] = ["month", "week", "day"];
 const taskViewOptions: TaskView[] = ["day", "week", "month"];
 const recurrences: Recurrence[] = [
@@ -947,6 +956,8 @@ export default function CalendarDashboard() {
     useState("");
   const [isMobileDevice, setIsMobileDevice] = useState(false);
   const [canVibrate, setCanVibrate] = useState(false);
+  const toastRemovalTimers = useRef<Record<string, number>>({});
+  const [toasts, setToasts] = useState<ToastItem[]>([]);
   const [notificationCapabilities, setNotificationCapabilities] =
     useState<NotificationCapabilities>(() => ({
       supportsNotifications: false,
@@ -979,11 +990,84 @@ export default function CalendarDashboard() {
   );
   const hasVisibleCalendars = visibleCalendarIds.size > 0;
 
+  const normalizedWorkspaceQuery = query.trim().toLowerCase();
+
+  const linkedTaskEventIdsMatchingQuery = useMemo(() => {
+    const eventIds = new Set<string>();
+
+    if (!normalizedWorkspaceQuery) return eventIds;
+
+    events.forEach((event) => {
+      event.tasks.forEach((task) => {
+        if (
+          [task.title, event.title]
+            .join(" ")
+            .toLowerCase()
+            .includes(normalizedWorkspaceQuery)
+        ) {
+          eventIds.add(event.id);
+        }
+      });
+    });
+
+    standaloneTasks.forEach((task) => {
+      if (
+        task.eventId &&
+        [task.title, task.eventTitle]
+          .join(" ")
+          .toLowerCase()
+          .includes(normalizedWorkspaceQuery)
+      ) {
+        eventIds.add(task.eventId);
+      }
+    });
+
+    return eventIds;
+  }, [events, normalizedWorkspaceQuery, standaloneTasks]);
+
+  const selectedLinkedTaskEventIds = useMemo(() => {
+    const eventIds = new Set<string>();
+
+    if (!normalizedWorkspaceQuery) return eventIds;
+
+    events.forEach((event) => {
+      if (event.date !== selectedKey) return;
+
+      event.tasks.forEach((task) => {
+        if (
+          [task.title, event.title, event.status]
+            .join(" ")
+            .toLowerCase()
+            .includes(normalizedWorkspaceQuery)
+        ) {
+          eventIds.add(event.id);
+        }
+      });
+    });
+
+    standaloneTasks.forEach((task) => {
+      const taskDate = task.date ?? task.reminderDate ?? selectedKey;
+
+      if (taskDate !== selectedKey || !task.eventId) return;
+
+      if (
+        [task.title, task.eventTitle]
+          .join(" ")
+          .toLowerCase()
+          .includes(normalizedWorkspaceQuery)
+      ) {
+        eventIds.add(task.eventId);
+      }
+    });
+
+    return eventIds;
+  }, [events, normalizedWorkspaceQuery, selectedKey, standaloneTasks]);
+
   const filteredEvents = useMemo(() => {
-    const normalizedQuery = query.trim().toLowerCase();
     return events
       .filter((event) => {
         const tag = tagMap[event.category];
+        const eventTaskText = event.tasks.map((task) => task.title).join(" ");
         const matchesCategory =
           activeCategory === "all" || event.category === activeCategory;
         const matchesCalendar =
@@ -992,11 +1076,12 @@ export default function CalendarDashboard() {
           visibleCalendarIds.has(event.calendarId) ||
           !calendars.some((calendar) => calendar.id === event.calendarId);
         const matchesQuery =
-          !normalizedQuery ||
-          [event.title, event.location, event.notes, tag?.label]
+          !normalizedWorkspaceQuery ||
+          [event.title, event.location, event.notes, tag?.label, eventTaskText]
             .join(" ")
             .toLowerCase()
-            .includes(normalizedQuery);
+            .includes(normalizedWorkspaceQuery) ||
+          linkedTaskEventIdsMatchingQuery.has(event.id);
 
         return (
           matchesCalendar &&
@@ -1014,15 +1099,21 @@ export default function CalendarDashboard() {
     calendars,
     events,
     hasVisibleCalendars,
-    query,
+    linkedTaskEventIdsMatchingQuery,
+    normalizedWorkspaceQuery,
     tagMap,
     visibleCalendarIds,
   ]);
 
   const selectedEvents = useMemo(
-    () => filteredEvents.filter((event) => event.date === selectedKey),
-    [filteredEvents, selectedKey],
+    () =>
+      filteredEvents.filter(
+        (event) =>
+          event.date === selectedKey || selectedLinkedTaskEventIds.has(event.id),
+      ),
+    [filteredEvents, selectedKey, selectedLinkedTaskEventIds],
   );
+  
   const selectedReminders = useMemo(
     () =>
       events
@@ -1170,6 +1261,51 @@ export default function CalendarDashboard() {
     () => alertItems.filter((alert) => alert.date === selectedKey),
     [alertItems, selectedKey],
   );
+
+  const searchedTaskItems = useMemo(() => {
+    if (!normalizedWorkspaceQuery) return selectedTaskItems;
+
+    return selectedTaskItems.filter((task) =>
+      [task.title, task.eventTitle, task.eventStatus ?? ""]
+        .join(" ")
+        .toLowerCase()
+        .includes(normalizedWorkspaceQuery),
+    );
+  }, [normalizedWorkspaceQuery, selectedTaskItems]);
+
+  const searchedVisibleTaskItems = useMemo(() => {
+    if (!normalizedWorkspaceQuery) return visibleTaskItems;
+
+    return visibleTaskItems.filter((task) =>
+      [task.title, task.eventTitle, task.eventStatus ?? ""]
+        .join(" ")
+        .toLowerCase()
+        .includes(normalizedWorkspaceQuery),
+    );
+  }, [normalizedWorkspaceQuery, visibleTaskItems]);
+
+  const searchedAlertItems = useMemo(() => {
+    if (!normalizedWorkspaceQuery) return selectedAlertItems;
+
+    return selectedAlertItems.filter((alert) =>
+      [alert.title, alert.eventId]
+        .join(" ")
+        .toLowerCase()
+        .includes(normalizedWorkspaceQuery),
+    );
+  }, [normalizedWorkspaceQuery, selectedAlertItems]);
+
+  const searchedAllAlertItems = useMemo(() => {
+    if (!normalizedWorkspaceQuery) return alertItems;
+
+    return alertItems.filter((alert) =>
+      [alert.title, alert.eventId]
+        .join(" ")
+        .toLowerCase()
+        .includes(normalizedWorkspaceQuery),
+    );
+  }, [alertItems, normalizedWorkspaceQuery]);
+
   const unboundUndoneTasks = useMemo(
     () => standaloneTasks.filter((task) => !task.done && !task.eventId),
     [standaloneTasks],
@@ -1245,10 +1381,10 @@ export default function CalendarDashboard() {
   }, [alertItems]);
 
   useEffect(() => {
-  if (!isPremium && statsRange !== "monthly") {
-    setStatsRange("monthly");
-  }
-}, [isPremium, statsRange]);
+    if (!isPremium && statsRange !== "monthly") {
+      setStatsRange("monthly");
+    }
+  }, [isPremium, statsRange]);
 
   function markBusy(action: string, busy: boolean) {
     setBusyActions((current) => {
@@ -1264,6 +1400,86 @@ export default function CalendarDashboard() {
 
   function isBusy(action: string) {
     return busyActions.has(action);
+  }
+
+  function removeToast(id: string) {
+    setToasts((current) =>
+      current.map((toast) =>
+        toast.id === id ? { ...toast, visible: false } : toast,
+      ),
+    );
+
+    window.setTimeout(() => {
+      setToasts((current) => current.filter((toast) => toast.id !== id));
+      delete toastRemovalTimers.current[id];
+    }, 220);
+  }
+
+  function pushToast(message: string, tone: ToastTone = "info") {
+    if (!message.trim()) return;
+
+    const id = createId();
+
+    setToasts((current) => [
+      ...current,
+      {
+        id,
+        message,
+        tone,
+        visible: false,
+      },
+    ]);
+
+    requestAnimationFrame(() => {
+      setToasts((current) =>
+        current.map((toast) =>
+          toast.id === id ? { ...toast, visible: true } : toast,
+        ),
+      );
+    });
+
+    toastRemovalTimers.current[id] = window.setTimeout(() => {
+      removeToast(id);
+    }, 3400);
+  }
+
+  function toastToneFromMessage(message: string): ToastTone {
+    const text = message.toLowerCase();
+
+    if (
+      text.includes("could not") ||
+      text.includes("failed") ||
+      text.includes("error") ||
+      text.includes("required") ||
+      text.includes("invalid") ||
+      text.includes("must") ||
+      text.includes("not found")
+    ) {
+      return "error";
+    }
+
+    if (
+      text.includes("warning") ||
+      text.includes("quiet hours") ||
+      text.includes("premium")
+    ) {
+      return "warning";
+    }
+
+    if (
+      text.includes("saved") ||
+      text.includes("created") ||
+      text.includes("updated") ||
+      text.includes("enabled") ||
+      text.includes("disabled") ||
+      text.includes("subscribed") ||
+      text.includes("deleted") ||
+      text.includes("sent")
+    ) {
+      return "success";
+    }
+
+    return "info";
   }
 
   function markWorkspaceMutation() {
@@ -1458,9 +1674,9 @@ export default function CalendarDashboard() {
       applyDocumentTheme(mappedSettings.theme, true);
       setWorkspaceReady(true);
       setIntroOpen(!mappedSettings.skipIntro);
-      setWorkspaceMessage(
-        options.message ?? "Workspace loaded from your account.",
-      );
+      if (options.message) {
+        setWorkspaceMessage(options.message);
+      }
     } catch (error) {
       if (
         loadVersionAtStart !== workspaceLoadVersion.current ||
@@ -1713,6 +1929,41 @@ export default function CalendarDashboard() {
 
     return () => media?.removeEventListener("change", applyTheme);
   }, [settings.theme]);
+
+  useEffect(() => {
+    if (!workspaceMessage) return;
+    pushToast(workspaceMessage, toastToneFromMessage(workspaceMessage));
+    setWorkspaceMessage("");
+  }, [workspaceMessage]);
+
+  useEffect(() => {
+    if (!settingsMessage) return;
+    pushToast(settingsMessage, toastToneFromMessage(settingsMessage));
+    setSettingsMessage("");
+  }, [settingsMessage]);
+
+  useEffect(() => {
+    if (!settingsError) return;
+    pushToast(settingsError, "error");
+    setSettingsError("");
+  }, [settingsError]);
+
+  useEffect(() => {
+    if (!notificationActionMessage) return;
+    pushToast(
+      notificationActionMessage,
+      toastToneFromMessage(notificationActionMessage),
+    );
+    setNotificationActionMessage("");
+  }, [notificationActionMessage]);
+
+  useEffect(() => {
+    return () => {
+      Object.values(toastRemovalTimers.current).forEach((timer) =>
+        window.clearTimeout(timer),
+      );
+    };
+  }, []);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -3009,8 +3260,26 @@ export default function CalendarDashboard() {
         })),
       );
       applyDocumentTheme(nextSettings.theme, true);
+
+      const changedSections = [
+        JSON.stringify(settings.profile) !== JSON.stringify(savedSettings.profile) ||
+        settings.skipIntro !== savedSettings.skipIntro
+          ? "Profile"
+          : null,
+        settings.theme !== savedSettings.theme ? "Theme" : null,
+        JSON.stringify(settings.notifications) !==
+        JSON.stringify(savedSettings.notifications)
+          ? "Notifications"
+          : null,
+        JSON.stringify(settings.ai) !== JSON.stringify(savedSettings.ai)
+          ? "AI & privacy"
+          : null,
+      ].filter(Boolean);
+
       setSettingsMessage(
-        "Profile saved. Theme saved. Notifications saved. AI settings saved.",
+        changedSections.length > 0
+          ? `${changedSections.join(", ")} saved.`
+          : "Settings saved.",
       );
     } catch (error) {
       setSettingsError(
@@ -3326,7 +3595,7 @@ export default function CalendarDashboard() {
             )}
             {activeTab === "tasks" && (
               <TasksTab
-                tasks={visibleTaskItems}
+                tasks={searchedVisibleTaskItems}
                 taskView={taskView}
                 setTaskView={setTaskView}
                 title={taskViewTitle}
@@ -3334,7 +3603,7 @@ export default function CalendarDashboard() {
                 onDelete={deleteTask}
               />
             )}
-            {activeTab === "alerts" && <AlertsTab alerts={alertItems} />}
+            {activeTab === "alerts" && <AlertsTab alerts={searchedAllAlertItems} />}
             {activeTab === "stats" && (
               <StatsTab
                 stats={stats}
@@ -3449,8 +3718,8 @@ export default function CalendarDashboard() {
               selectedDate={selectedDate}
               events={selectedEvents}
               reminders={selectedReminders}
-              tasks={selectedTaskItems}
-              alerts={selectedAlertItems}
+              tasks={searchedTaskItems}
+              alerts={searchedAlertItems}
             />
           )}
         </aside>
@@ -3518,8 +3787,8 @@ export default function CalendarDashboard() {
           }
           selectedDate={selectedDate}
           todayEvents={selectedEvents}
-          todayTasks={selectedTaskItems}
-          alerts={selectedAlertItems}
+          todayTasks={searchedTaskItems}
+          alerts={searchedAlertItems}
           onClose={() => setIntroOpen(false)}
           onSkipNextTime={skipIntroFromModal}
           saving={introSaving}
@@ -3546,6 +3815,7 @@ export default function CalendarDashboard() {
           onConfirm={requestAccountDeletion}
         />
       )}
+      <ToastViewport toasts={toasts} onClose={removeToast} />
     </main>
   );
 }
@@ -4774,17 +5044,11 @@ function SettingsTab({
         title="Account workspace"
         count={calendars.length}
       />
-      {hasUnsavedSettings && (
-        <p className="rounded-2xl bg-[#fff4df] px-4 py-3 text-xs font-bold text-[#9a5b00]">
-          Unsaved changes are only previews. Save to keep them, or leave
-          Settings/switch windows to revert.
-        </p>
-      )}
-      <div className="sticky top-0 z-10 grid grid-cols-2 gap-2 rounded-[24px] bg-white/70 p-2 shadow-lg shadow-black/5 backdrop-blur-xl lg:top-3">
+      <div className="sticky top-0 z-10 grid grid-cols-2 gap-2 rounded-[24px] border border-[var(--border-soft)] bg-[var(--surface)] p-2 shadow-lg shadow-[var(--shadow-soft)] backdrop-blur-xl lg:top-3">
         <button
           type="button"
           onClick={onSaveSettings}
-          className="h-10 rounded-full bg-[#007aff] text-sm font-bold text-white shadow-lg shadow-[#007aff]/25 disabled:opacity-50"
+          className="h-11 rounded-full bg-[var(--accent)] text-sm font-bold text-white shadow-lg shadow-[var(--shadow-soft)] transition hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-50"
           disabled={!hasUnsavedSettings && !settingsError}
         >
           Save changes
@@ -4792,33 +5056,17 @@ function SettingsTab({
         <button
           type="button"
           onClick={onRevertSettings}
-          className="h-10 rounded-full bg-white/75 text-sm font-bold text-[#636366] shadow-sm disabled:opacity-50"
+          className="h-11 rounded-full border border-[var(--border-soft)] bg-[var(--surface-strong)] text-sm font-bold text-[var(--muted)] shadow-sm transition hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-50"
           disabled={!hasUnsavedSettings}
         >
           Revert
         </button>
       </div>
       {workspaceLoading && (
-        <p className="rounded-2xl bg-white/70 px-4 py-3 text-sm font-bold text-[#007aff]">
+        <p className="rounded-2xl border border-[var(--border-soft)] bg-[var(--surface)] px-4 py-3 text-sm font-bold text-[var(--accent)] shadow-sm shadow-[var(--shadow-soft)]">
           Loading account data...
         </p>
       )}
-      {workspaceMessage && (
-        <p className="rounded-2xl bg-white/70 px-4 py-3 text-sm font-bold text-[#636366]">
-          {workspaceMessage}
-        </p>
-      )}
-      {settingsMessage && (
-        <p className="rounded-2xl bg-[#e9fbe9] px-4 py-3 text-sm font-bold text-[#228f3b]">
-          {settingsMessage}
-        </p>
-      )}
-      {settingsError && (
-        <p className="rounded-2xl bg-[#ffe8e6] px-4 py-3 text-sm font-bold text-[#ff3b30]">
-          {settingsError}
-        </p>
-      )}
-
       <SettingsCard
         id="settings-profile"
         sectionId="profile"
@@ -6490,23 +6738,36 @@ function DesktopPanel({
   }>;
   alerts: RescheduleReminder[];
 }) {
+  const overviewItems = [
+    { label: "Events", value: events.length },
+    { label: "Tasks", value: tasks.filter((task) => !task.done).length },
+    { label: "Alerts", value: alerts.length + reminders.length },
+  ];
+
   return (
     <>
-      <section className="rounded-[36px] border border-white/55 bg-white/58 p-6 shadow-2xl shadow-[#6d5dfc]/10 backdrop-blur-3xl">
-        <p className="text-sm font-bold text-[#8e8e93]">Desktop overview</p>
-        <h2 className="mt-1 text-3xl font-semibold">
+      <section className="rounded-[36px] border border-[var(--border-soft)] bg-[var(--surface)] p-6 shadow-2xl shadow-[var(--shadow-soft)] backdrop-blur-3xl">
+        <p className="text-sm font-bold text-[var(--muted)]">Desktop overview</p>
+        <h2 className="mt-1 text-3xl font-semibold text-[var(--foreground)]">
           {formatLongDate(selectedDate)}
         </h2>
         <div className="mt-5 grid grid-cols-3 gap-3">
-          <Stat label="Events" value={events.length} />
-          <Stat
-            label="Tasks"
-            value={tasks.filter((task) => !task.done).length}
-          />
-          <Stat label="Alerts" value={alerts.length + reminders.length} />
+          {overviewItems.map((item) => (
+            <div
+              key={item.label}
+              className="rounded-[30px] border border-[var(--border-soft)] bg-[var(--surface)] p-6 text-center shadow-lg shadow-[var(--shadow-soft)] backdrop-blur-xl"
+            >
+              <p className="text-4xl font-black text-[var(--foreground)]">
+                {item.value}
+              </p>
+              <p className="mt-2 text-sm font-bold text-[var(--muted)]">
+                {item.label}
+              </p>
+            </div>
+          ))}
         </div>
       </section>
-      <section className="overflow-y-auto rounded-[36px] border border-white/55 bg-white/58 p-6 pb-10 shadow-2xl shadow-[#6d5dfc]/10 backdrop-blur-3xl">
+      <section className="overflow-y-auto rounded-[36px] border border-[var(--border-soft)] bg-[var(--surface)] p-6 pb-10 shadow-2xl shadow-[var(--shadow-soft)] backdrop-blur-3xl">
         <SectionTitle
           eyebrow="Planner"
           title="Selected day at a glance"
@@ -6516,10 +6777,12 @@ function DesktopPanel({
           {events.map((event) => (
             <article
               key={event.id}
-              className="rounded-[24px] bg-white/70 p-4 shadow-lg shadow-black/5"
+              className="rounded-[24px] border border-[var(--border-soft)] bg-[var(--surface-strong)] p-4 shadow-lg shadow-[var(--shadow-soft)]"
             >
-              <h3 className="text-base font-semibold">{event.title}</h3>
-              <p className="mt-1 text-sm font-semibold text-[#8e8e93]">
+              <h3 className="text-base font-semibold text-[var(--foreground)]">
+                {event.title}
+              </h3>
+              <p className="mt-1 text-sm font-semibold text-[var(--muted)]">
                 {event.time} · {event.location}
               </p>
               {event.tasks.filter((task) => !task.done).length > 0 && (
@@ -6529,7 +6792,7 @@ function DesktopPanel({
                     .map((task) => (
                       <p
                         key={task.id}
-                        className="text-sm font-semibold text-[#636366]"
+                        className="text-sm font-semibold text-[var(--muted)]"
                       >
                         • {task.title}
                       </p>
@@ -6666,11 +6929,21 @@ function IconButton({
   );
 }
 
-function Stat({ label, value }: { label: string; value: number }) {
+function Stat({
+  label,
+  value,
+}: {
+  label: string;
+  value: number | string;
+}) {
   return (
-    <div className="rounded-[24px] bg-white/70 p-4 text-center shadow-lg shadow-black/5">
-      <p className="text-2xl font-semibold">{value}</p>
-      <p className="text-sm font-bold text-[#8e8e93]">{label}</p>
+    <div className="rounded-[26px] border border-[var(--border-soft)] bg-[var(--surface)] p-4 text-center shadow-lg shadow-[var(--shadow-soft)] backdrop-blur-xl">
+      <p className="text-4xl font-black text-[var(--foreground)]">
+        {value}
+      </p>
+      <p className="mt-2 text-sm font-bold text-[var(--muted)]">
+        {label}
+      </p>
     </div>
   );
 }
@@ -6698,26 +6971,30 @@ function SettingsCard({
     <article
       id={id}
       className={[
-        "rounded-[24px] border p-3 shadow-lg shadow-black/5 backdrop-blur-xl transition",
+        "rounded-[26px] border p-4 shadow-lg shadow-[var(--shadow-soft)] backdrop-blur-xl transition",
         open
-          ? "border-[#007aff]/25 bg-white/76"
-          : "border-white/60 bg-white/52",
+          ? "border-[var(--accent)] bg-[var(--surface)]"
+          : "border-[var(--border-soft)] bg-[var(--surface)]",
       ].join(" ")}
     >
       <button
         type="button"
         onClick={() => onSectionChange(sectionId)}
-        className="flex w-full items-center justify-between gap-3 text-left text-[#007aff]"
+        className="flex w-full items-center justify-between gap-3 text-left"
       >
-        <span className="flex items-center gap-2">
+        <span className="flex items-center gap-3 text-[var(--accent)]">
           {icon}
-          <h3 className="text-base font-bold text-[#1d1d1f]">{title}</h3>
+          <h3 className="text-base font-bold text-[var(--foreground)]">
+            {title}
+          </h3>
         </span>
-        <span className="rounded-full bg-white/70 px-2 py-1 text-[11px] font-black text-[#8e8e93]">
+
+        <span className="rounded-full bg-[var(--surface-strong)] px-3 py-1 text-[11px] font-black text-[var(--muted)]">
           {open ? "Selected" : "Open"}
         </span>
       </button>
-      {open && <div className="mt-3">{children}</div>}
+
+      {open && <div className="mt-4">{children}</div>}
     </article>
   );
 }
@@ -6730,11 +7007,13 @@ function PlaceholderRow({
   danger?: boolean;
 }) {
   return (
-    <div className="mt-2 flex items-center justify-between rounded-2xl bg-[#f2f2f7] px-3 py-2 text-sm font-bold">
-      <span className={danger ? "text-[#ff3b30]" : "text-[#636366]"}>
+    <div className="mt-2 flex items-center justify-between rounded-2xl border border-[var(--border-soft)] bg-[var(--surface-muted)] px-3 py-2 text-sm font-bold">
+      <span
+        className={danger ? "text-[#ff453a]" : "text-[var(--muted)]"}
+      >
         {title}
       </span>
-      <span className="rounded-full bg-white px-2 py-1 text-[11px] text-[#8e8e93]">
+      <span className="rounded-full bg-[var(--surface-strong)] px-2 py-1 text-[11px] text-[var(--muted)]">
         Coming soon
       </span>
     </div>
@@ -6743,16 +7022,18 @@ function PlaceholderRow({
 
 function PlanCard({ title, body }: { title: string; body: string }) {
   return (
-    <div className="rounded-2xl bg-white/80 p-3 shadow-sm">
-      <p className="text-sm font-bold">{title}</p>
-      <p className="mt-1 text-xs font-semibold text-[#7c7c8a]">{body}</p>
+    <div className="rounded-2xl border border-[var(--border-soft)] bg-[var(--surface)] p-3 shadow-sm shadow-[var(--shadow-soft)]">
+      <p className="text-sm font-bold text-[var(--foreground)]">{title}</p>
+      <p className="mt-1 text-xs font-semibold text-[var(--muted)]">
+        {body}
+      </p>
     </div>
   );
 }
 
 function ModalShell({ children }: { children: React.ReactNode }) {
   return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/25 px-3 pb-3 backdrop-blur-sm">
+    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/35 px-3 pb-3 backdrop-blur-md">
       {children}
     </div>
   );
@@ -6771,13 +7052,17 @@ function ModalHeader({
     <div className="mb-4 flex items-center justify-between">
       <div>
         {eyebrow && (
-          <p className="text-sm font-bold text-[#8e8e93]">{eyebrow}</p>
+          <p className="text-sm font-bold text-[var(--muted)]">
+            {eyebrow}
+          </p>
         )}
-        <h2 className="text-xl font-semibold">{title}</h2>
+        <h2 className="text-xl font-semibold text-[var(--foreground)]">
+          {title}
+        </h2>
       </div>
       <button
         type="button"
-        className="grid size-9 place-items-center rounded-full bg-[#f2f2f7] text-[#636366]"
+        className="grid size-9 place-items-center rounded-full bg-[var(--surface-muted)] text-[var(--muted)]"
         onClick={onClose}
         aria-label="Close"
       >
@@ -6800,12 +7085,12 @@ function Toggle({
     <button
       type="button"
       onClick={onClick}
-      className="flex h-12 items-center justify-between rounded-2xl bg-[#f2f2f7] px-3 text-sm font-bold"
+      className="flex h-12 w-full items-center justify-between rounded-2xl border border-[var(--border-soft)] bg-[var(--surface-muted)] px-3 text-sm font-bold text-[var(--foreground)] transition hover:brightness-105"
     >
-      {label}
+      <span className="pr-3 text-left">{label}</span>
       <span
         className={[
-          "flex h-7 w-12 items-center rounded-full p-0.5 transition",
+          "flex h-7 w-12 shrink-0 items-center rounded-full p-0.5 transition",
           checked ? "bg-[#34c759]" : "bg-[#c7c7cc]",
         ].join(" ")}
       >
@@ -6817,5 +7102,100 @@ function Toggle({
         />
       </span>
     </button>
+  );
+}
+
+function ToastViewport({
+  toasts,
+  onClose,
+}: {
+  toasts: ToastItem[];
+  onClose: (id: string) => void;
+}) {
+  return (
+    <div className="pointer-events-none fixed right-4 top-4 z-[80] flex w-[min(92vw,380px)] flex-col gap-3">
+      {toasts.map((toast) => (
+        <ToastCard key={toast.id} toast={toast} onClose={onClose} />
+      ))}
+    </div>
+  );
+}
+
+function ToastCard({
+  toast,
+  onClose,
+}: {
+  toast: ToastItem;
+  onClose: (id: string) => void;
+}) {
+  const toneStyles =
+    toast.tone === "success"
+      ? "border-emerald-200/70 bg-[var(--surface)] text-[var(--foreground)]"
+      : toast.tone === "error"
+        ? "border-rose-200/70 bg-[var(--surface)] text-[var(--foreground)]"
+        : toast.tone === "warning"
+          ? "border-amber-200/70 bg-[var(--surface)] text-[var(--foreground)]"
+          : "border-sky-200/70 bg-[var(--surface)] text-[var(--foreground)]";
+
+  const accent =
+    toast.tone === "success"
+      ? "bg-emerald-500"
+      : toast.tone === "error"
+        ? "bg-rose-500"
+        : toast.tone === "warning"
+          ? "bg-amber-500"
+          : "bg-sky-500";
+
+  return (
+    <div
+      className={[
+        "pointer-events-auto overflow-hidden rounded-[24px] border shadow-2xl backdrop-blur-2xl transition-all duration-200",
+        toast.visible
+          ? "translate-y-0 scale-100 opacity-100"
+          : "-translate-y-2 scale-[0.98] opacity-0",
+        toneStyles,
+      ].join(" ")}
+    >
+      <div className="flex items-start gap-3 p-4">
+        <div
+          className={[
+            "mt-0.5 grid size-9 shrink-0 place-items-center rounded-full text-white",
+            accent,
+          ].join(" ")}
+        >
+          {toast.tone === "success" ? (
+            <Check size={18} />
+          ) : toast.tone === "error" ? (
+            <CircleX size={18} />
+          ) : toast.tone === "warning" ? (
+            <Shield size={18} />
+          ) : (
+            <Bell size={18} />
+          )}
+        </div>
+
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-semibold leading-6">{toast.message}</p>
+        </div>
+
+        <button
+          type="button"
+          onClick={() => onClose(toast.id)}
+          className="grid size-8 shrink-0 place-items-center rounded-full bg-[var(--surface-muted)] text-[var(--muted)] transition hover:brightness-95"
+          aria-label="Dismiss notification"
+        >
+          <X size={16} />
+        </button>
+      </div>
+
+      <div className="h-1 w-full bg-[var(--surface-muted)]">
+        <div
+          className={[
+            "h-1 origin-left animate-[toastbar_3.4s_linear_forwards]",
+            accent,
+          ].join(" ")}
+        />
+      </div>
+    </div>
   );
 }
