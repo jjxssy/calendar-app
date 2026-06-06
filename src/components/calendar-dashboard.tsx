@@ -116,6 +116,8 @@ type StandaloneTask = {
   id: string;
   title: string;
   done: boolean;
+  date?: string;
+  time?: string;
   reminderDate?: string;
   reminderTime?: string;
   eventId: string | null;
@@ -187,22 +189,6 @@ type DbCategory = {
   icon?: string | null;
 };
 
-type DbTask = {
-  id: string;
-  eventId?: string | null;
-  title: string;
-  description?: string | null;
-  completed: boolean;
-  dueDate?: string | null;
-  event?: {
-    id: string;
-    title: string;
-    status?: CalendarEvent["status"];
-    startDate?: string;
-  } | null;
-  reminders?: DbReminder[];
-};
-
 type DbReminder = {
   id: string;
   eventId?: string | null;
@@ -211,6 +197,24 @@ type DbReminder = {
   remindAt: string;
   completed: boolean;
   notificationSentAt?: string | null;
+};
+
+type DbTask = {
+  id: string;
+  eventId?: string | null;
+  title: string;
+  description?: string | null;
+  completed: boolean;
+  dueDate?: string | null;
+  createdAt?: string;
+  updatedAt?: string;
+  event?: {
+    id: string;
+    title: string;
+    status?: CalendarEvent["status"];
+    startDate?: string;
+  } | null;
+  reminders?: DbReminder[];
 };
 
 type DbEvent = {
@@ -337,6 +341,15 @@ function createId() {
 
 function currentTimeValue(date = new Date()) {
   return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+}
+
+function dateKeyFromDbDate(value: string) {
+  return value.slice(0, 10);
+}
+
+function timeValueFromDbDate(value: string) {
+  const match = value.match(/T?(\d{2}):(\d{2})/);
+  return match ? `${match[1]}:${match[2]}` : currentTimeValue(new Date(value));
 }
 
 function requestNotificationPermission() {
@@ -528,13 +541,12 @@ function formatDuration(startDate: string, endDate?: string | null) {
 }
 
 function mapReminder(reminder: DbReminder): RescheduleReminder {
-  const date = new Date(reminder.remindAt);
   return {
     id: reminder.id,
     eventId: reminder.eventId ?? "none",
     title: reminder.title,
-    date: toDateKey(date),
-    time: currentTimeValue(date),
+    date: dateKeyFromDbDate(reminder.remindAt),
+    time: timeValueFromDbDate(reminder.remindAt),
     done: reminder.completed,
     notificationSentAt: reminder.notificationSentAt ?? null,
   };
@@ -542,12 +554,14 @@ function mapReminder(reminder: DbReminder): RescheduleReminder {
 
 function mapEvent(event: DbEvent): CalendarEvent {
   const start = new Date(event.startDate);
+  const eventDate = dateKeyFromDbDate(event.startDate);
+  const eventTime = timeValueFromDbDate(event.startDate);
   return {
     id: event.id,
     calendarId: event.calendarId ?? undefined,
     title: event.title,
-    date: toDateKey(start),
-    time: event.allDay ? "All day" : currentTimeValue(start),
+    date: eventDate,
+    time: event.allDay ? "All day" : eventTime,
     duration: formatDuration(event.startDate, event.endDate),
     category: event.categoryId ?? event.category?.id ?? "uncategorized",
     priority: event.priority === "urgent" ? "high" : event.priority,
@@ -582,15 +596,27 @@ function mapStandaloneTask(task: DbTask, today: Date): StandaloneTask {
     ?.filter((reminder) => !reminder.completed)
     .sort((a, b) => a.remindAt.localeCompare(b.remindAt))[0];
 
+  const dateSource =
+    task.dueDate ??
+    firstReminder?.remindAt ??
+    task.createdAt ??
+    task.event?.startDate ??
+    null;
+
   const reminderSource = task.dueDate ?? firstReminder?.remindAt ?? null;
-  const reminderDate = reminderSource ? new Date(reminderSource) : null;
 
   return {
     id: task.id,
     title: task.title,
     done: task.completed,
-    reminderDate: reminderDate ? toDateKey(reminderDate) : undefined,
-    reminderTime: reminderDate ? currentTimeValue(reminderDate) : undefined,
+    date: dateSource ? dateKeyFromDbDate(dateSource) : toDateKey(today),
+    time: dateSource ? timeValueFromDbDate(dateSource) : undefined,
+    reminderDate: reminderSource
+      ? dateKeyFromDbDate(reminderSource)
+      : undefined,
+    reminderTime: reminderSource
+      ? timeValueFromDbDate(reminderSource)
+      : undefined,
     eventId: task.eventId ?? null,
     eventTitle: task.event?.title ?? "Standalone task",
     notificationSentAt: firstReminder?.notificationSentAt ?? null,
@@ -1006,26 +1032,32 @@ export default function CalendarDashboard() {
     [events, selectedKey],
   );
   const weekDays = useMemo(() => getWeekDays(selectedDate), [selectedDate]);
-  const taskItems = useMemo(
-    (): TaskListItem[] => [
-      ...events.flatMap((event) =>
-        event.tasks.map((task) => ({
+  const taskItems = useMemo((): TaskListItem[] => {
+    const byId = new Map<string, TaskListItem>();
+
+    events.forEach((event) => {
+      event.tasks.forEach((task) => {
+        byId.set(task.id, {
           ...task,
           eventId: event.id,
           eventTitle: event.title,
           eventStatus: event.status,
           date: event.date,
           time: event.time === "All day" ? undefined : event.time,
-        })),
-      ),
-      ...standaloneTasks.map((task) => ({
-  ...task,
-  date: task.reminderDate ?? selectedKey,
-  time: task.reminderTime,
-})),
-    ],
-    [events, standaloneTasks],
-  );
+        });
+      });
+    });
+
+    standaloneTasks.forEach((task) => {
+      byId.set(task.id, {
+        ...task,
+        date: task.date ?? task.reminderDate ?? selectedKey,
+        time: task.time ?? task.reminderTime,
+      });
+    });
+
+    return Array.from(byId.values());
+  }, [events, standaloneTasks, selectedKey]);
   const selectedTaskItems = useMemo(
     () => taskItems.filter((task) => task.date === selectedKey),
     [selectedKey, taskItems],
@@ -1090,18 +1122,20 @@ export default function CalendarDashboard() {
           .concat(eventReminders)
       : [];
     const taskAlerts = settings.notifications.taskReminders
-  ? standaloneTasks
-      .filter((task) => !task.done && task.reminderDate && task.reminderTime)
-      .map((task) => ({
-        id: `task-alert-${task.id}`,
-        eventId: task.eventId ?? "none",
-        title: `Task reminder: ${task.title}`,
-        date: task.reminderDate!,
-        time: task.reminderTime!,
-        done: task.done,
-        notificationSentAt: task.notificationSentAt,
-      }))
-  : [];
+      ? standaloneTasks
+          .filter(
+            (task) => !task.done && task.reminderDate && task.reminderTime,
+          )
+          .map((task) => ({
+            id: `task-alert-${task.id}`,
+            eventId: task.eventId ?? "none",
+            title: `Task reminder: ${task.title}`,
+            date: task.reminderDate!,
+            time: task.reminderTime!,
+            done: task.done,
+            notificationSentAt: task.notificationSentAt,
+          }))
+      : [];
     const dailyAgendaAlert = settings.notifications.dailyAgenda
       ? [
           {
@@ -1346,14 +1380,12 @@ export default function CalendarDashboard() {
         calendarId: current.calendarId || mappedCalendars[0]?.id || "",
       }));
       setEventReminders(
-  reminderPayload.reminders
-    .filter((reminder) => !reminder.eventId && !reminder.taskId)
-    .map(mapReminder),
-);
+        reminderPayload.reminders
+          .filter((reminder) => !reminder.eventId && !reminder.taskId)
+          .map(mapReminder),
+      );
       setStandaloneTasks(
-        taskPayload.tasks
-          .filter((task) => !task.eventId)
-          .map((task) => mapStandaloneTask(task, today)),
+        taskPayload.tasks.map((task) => mapStandaloneTask(task, today)),
       );
       setSavedSettings(mappedSettings);
       setSettings(mappedSettings);
@@ -1394,23 +1426,17 @@ export default function CalendarDashboard() {
       ]);
 
       const mappedEvents = eventPayload.events.map(mapEvent);
-
       setEvents(mappedEvents);
 
-      setSelectedDate(today);
-      setVisibleMonth(startOfMonth(today));
-
       setStandaloneTasks(
-        taskPayload.tasks
-          .filter((task) => !task.eventId)
-          .map((task) => mapStandaloneTask(task, today)),
+        taskPayload.tasks.map((task) => mapStandaloneTask(task, today)),
       );
 
       setEventReminders(
-  reminderPayload.reminders
-    .filter((reminder) => !reminder.eventId && !reminder.taskId)
-    .map(mapReminder),
-);
+        reminderPayload.reminders
+          .filter((reminder) => !reminder.eventId && !reminder.taskId)
+          .map(mapReminder),
+      );
 
       if (message) setWorkspaceMessage(message);
     } catch (error) {
@@ -1864,67 +1890,67 @@ export default function CalendarDashboard() {
   }
 
   async function saveTask(event: FormEvent<HTMLFormElement>) {
-  event.preventDefault();
+    event.preventDefault();
 
-  if (composerSubmitting) return;
+    if (composerSubmitting) return;
 
-  const title = taskDraft.title.trim();
+    const title = taskDraft.title.trim();
 
-  if (!title) {
-    setWorkspaceMessage("Task title is required.");
-    return;
-  }
+    if (!title) {
+      setWorkspaceMessage("Task title is required.");
+      return;
+    }
 
-  const eventId =
-    taskDraft.eventId && taskDraft.eventId !== "none"
-      ? taskDraft.eventId
+    const eventId =
+      taskDraft.eventId && taskDraft.eventId !== "none"
+        ? taskDraft.eventId
+        : undefined;
+
+    const dueDate = taskDraft.reminderEnabled
+      ? `${taskDraft.reminderDate}T${taskDraft.reminderTime}:00`
       : undefined;
 
-  const dueDate = taskDraft.reminderEnabled
-    ? `${taskDraft.reminderDate}T${taskDraft.reminderTime}:00`
-    : undefined;
+    if (
+      taskDraft.reminderEnabled &&
+      !isFutureDateTime(taskDraft.reminderDate, taskDraft.reminderTime)
+    ) {
+      setWorkspaceMessage("Choose a future reminder time for this task.");
+      return;
+    }
 
-  if (
-    taskDraft.reminderEnabled &&
-    !isFutureDateTime(taskDraft.reminderDate, taskDraft.reminderTime)
-  ) {
-    setWorkspaceMessage("Choose a future reminder time for this task.");
-    return;
+    setComposerSubmitting(true);
+    markWorkspaceMutation();
+
+    try {
+      await apiJson<{ task: DbTask }>("/api/tasks", {
+        method: "POST",
+        body: JSON.stringify({
+          title,
+          eventId,
+          dueDate,
+        }),
+      });
+
+      await refreshSchedule("Task created.");
+
+      setTaskDraft({
+        title: "",
+        reminderEnabled: false,
+        reminderDate: toDateKey(selectedDate),
+        reminderTime: currentTimeValue(),
+        eventId: "none",
+      });
+
+      setComposerOpen(false);
+      setActiveTab("tasks");
+    } catch (error) {
+      setWorkspaceMessage(
+        error instanceof Error ? error.message : "Could not create task.",
+      );
+    } finally {
+      setComposerSubmitting(false);
+    }
   }
-
-  setComposerSubmitting(true);
-  markWorkspaceMutation();
-
-  try {
-    await apiJson<{ task: DbTask }>("/api/tasks", {
-      method: "POST",
-      body: JSON.stringify({
-        title,
-        eventId,
-        dueDate,
-      }),
-    });
-
-    await refreshSchedule("Task created.");
-
-    setTaskDraft({
-      title: "",
-      reminderEnabled: false,
-      reminderDate: toDateKey(selectedDate),
-      reminderTime: currentTimeValue(),
-      eventId: "none",
-    });
-
-    setComposerOpen(false);
-    setActiveTab("tasks");
-  } catch (error) {
-    setWorkspaceMessage(
-      error instanceof Error ? error.message : "Could not create task.",
-    );
-  } finally {
-    setComposerSubmitting(false);
-  }
-}
 
   async function saveEvent(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -2489,35 +2515,46 @@ export default function CalendarDashboard() {
   async function unlinkTaskFromEvent(_eventId: string, taskId: string) {
     const action = `task:${taskId}:unlink`;
     if (isBusy(action)) return;
+
     const linkedTask = events
       .flatMap((event) => event.tasks)
       .find((task) => task.id === taskId);
+
     const previousEvents = events;
     const previousTasks = standaloneTasks;
+    const fallbackDate = toDateKey(selectedDate);
+    const fallbackTime = currentTimeValue();
+
     setEvents((current) =>
       current.map((event) => ({
         ...event,
         tasks: event.tasks.filter((task) => task.id !== taskId),
       })),
     );
+
     if (linkedTask) {
       setStandaloneTasks((current) => [
         {
           id: linkedTask.id,
           title: linkedTask.title,
           done: linkedTask.done,
-          reminderDate: toDateKey(selectedDate),
-          reminderTime: currentTimeValue(),
+          date: fallbackDate,
+          time: fallbackTime,
+          reminderDate: undefined,
+          reminderTime: undefined,
           eventId: null,
           eventTitle: "Standalone task",
+          notificationSentAt: null,
         },
         ...current,
       ]);
     }
+
     markBusy(action, true);
+
     try {
       await apiJson(`/api/tasks/${taskId}/unlink-event`, { method: "PATCH" });
-      setWorkspaceMessage("Task unlinked.");
+      await refreshSchedule("Task unlinked.");
     } catch (error) {
       setEvents(previousEvents);
       setStandaloneTasks(previousTasks);
@@ -5292,54 +5329,54 @@ function EventComposer({
               />
             </FieldLabel>
             <label className="flex items-center justify-between gap-3 rounded-3xl border border-white/70 bg-white/70 p-4 shadow-sm shadow-black/5">
-  <span>
-    <span className="block text-sm font-black text-[#1d1d1f]">
-      Add reminder
-    </span>
-    <span className="mt-1 block text-xs font-semibold leading-5 text-[#7c7c8a]">
-      Turn this on only when the task needs a due date and time.
-    </span>
-  </span>
+              <span>
+                <span className="block text-sm font-black text-[#1d1d1f]">
+                  Add reminder
+                </span>
+                <span className="mt-1 block text-xs font-semibold leading-5 text-[#7c7c8a]">
+                  Turn this on only when the task needs a due date and time.
+                </span>
+              </span>
 
-  <input
-    type="checkbox"
-    checked={taskDraft.reminderEnabled}
-    onChange={(event) =>
-      setTaskDraft({
-        ...taskDraft,
-        reminderEnabled: event.target.checked,
-      })
-    }
-    className="size-5 accent-[#007aff]"
-  />
-</label>
+              <input
+                type="checkbox"
+                checked={taskDraft.reminderEnabled}
+                onChange={(event) =>
+                  setTaskDraft({
+                    ...taskDraft,
+                    reminderEnabled: event.target.checked,
+                  })
+                }
+                className="size-5 accent-[#007aff]"
+              />
+            </label>
 
-{taskDraft.reminderEnabled && (
-  <div className="grid grid-cols-2 gap-3">
-    <FieldLabel label="Due date">
-      <input
-        type="date"
-        value={taskDraft.reminderDate}
-        onChange={(event) =>
-          setTaskDraft({
-            ...taskDraft,
-            reminderDate: event.target.value,
-          })
-        }
-        className="input-shell w-full"
-      />
-    </FieldLabel>
+            {taskDraft.reminderEnabled && (
+              <div className="grid grid-cols-2 gap-3">
+                <FieldLabel label="Due date">
+                  <input
+                    type="date"
+                    value={taskDraft.reminderDate}
+                    onChange={(event) =>
+                      setTaskDraft({
+                        ...taskDraft,
+                        reminderDate: event.target.value,
+                      })
+                    }
+                    className="input-shell w-full"
+                  />
+                </FieldLabel>
 
-    <FieldLabel label="Due time">
-      <AppleTimePicker
-        value={taskDraft.reminderTime}
-        onChange={(time) =>
-          setTaskDraft({ ...taskDraft, reminderTime: time })
-        }
-      />
-    </FieldLabel>
-  </div>
-)}
+                <FieldLabel label="Due time">
+                  <AppleTimePicker
+                    value={taskDraft.reminderTime}
+                    onChange={(time) =>
+                      setTaskDraft({ ...taskDraft, reminderTime: time })
+                    }
+                  />
+                </FieldLabel>
+              </div>
+            )}
             <FieldLabel
               label="Link to event"
               helper="Optional. Leave this as no event for a standalone task."
@@ -5976,136 +6013,152 @@ function IntroModal({
   const displayName = accountName.includes("@")
     ? accountName.split("@")[0]
     : accountName;
-  const visibleEvents = todayEvents.slice(0, 3);
-  const openTasks = todayTasks.filter((task) => !task.done).slice(0, 3);
-  const pendingAlerts = alerts.filter((alert) => !alert.done).slice(0, 3);
+
+  const openTasks = todayTasks.filter((task) => !task.done);
+  const pendingAlerts = alerts.filter((alert) => !alert.done);
+
+  const nextEvent = todayEvents[0];
+  const nextTask = openTasks[0];
+  const nextAlert = pendingAlerts[0];
+
+  const summary =
+    todayEvents.length === 0 &&
+    openTasks.length === 0 &&
+    pendingAlerts.length === 0
+      ? "Your selected day is open. Nothing urgent is waiting."
+      : [
+          todayEvents.length > 0
+            ? `${todayEvents.length} event${todayEvents.length === 1 ? "" : "s"}`
+            : null,
+          openTasks.length > 0
+            ? `${openTasks.length} open task${openTasks.length === 1 ? "" : "s"}`
+            : null,
+          pendingAlerts.length > 0
+            ? `${pendingAlerts.length} alert${pendingAlerts.length === 1 ? "" : "s"}`
+            : null,
+        ]
+          .filter(Boolean)
+          .join(" · ");
 
   return (
     <ModalShell>
-      <div className="w-full max-w-lg overflow-hidden rounded-[36px] border border-white/70 bg-white/95 shadow-2xl shadow-[#6d5dfc]/20 backdrop-blur-2xl">
-        <div className="relative overflow-hidden bg-[#f6f4ff] p-5">
-          <div className="pointer-events-none absolute -left-16 -top-16 size-44 rounded-full bg-[#ff9bd2]/45 blur-3xl" />
-          <div className="pointer-events-none absolute -right-16 top-8 size-44 rounded-full bg-[#7dd3fc]/55 blur-3xl" />
-          <div className="relative flex items-start justify-between gap-4">
-            <div>
+      <div className="w-full max-w-sm overflow-hidden rounded-[30px] border border-white/70 bg-white/95 shadow-2xl shadow-[#6d5dfc]/20 backdrop-blur-2xl">
+        <div className="relative overflow-hidden bg-[#f6f4ff] p-4">
+          <div className="pointer-events-none absolute -left-16 -top-16 size-36 rounded-full bg-[#ff9bd2]/45 blur-3xl" />
+          <div className="pointer-events-none absolute -right-16 top-6 size-36 rounded-full bg-[#7dd3fc]/50 blur-3xl" />
+
+          <div className="relative flex items-start justify-between gap-3">
+            <div className="min-w-0">
               <p className="text-xs font-black uppercase tracking-[0.16em] text-[#af52de]">
                 Welcome back
               </p>
-              <h2 className="mt-2 text-3xl font-black tracking-tight text-[#18181b]">
-                Hello {displayName}, here&apos;s what&apos;s to come.
+              <h2 className="mt-1 text-2xl font-black tracking-tight text-[#18181b]">
+                Hi {displayName}
               </h2>
-              <p className="mt-2 text-sm font-bold leading-6 text-[#636366]">
-                {formatLongDate(selectedDate)} is ready with your saved events,
-                tasks, reminders, and workspace preferences.
+              <p className="mt-1 text-sm font-bold leading-5 text-[#636366]">
+                {formatLongDate(selectedDate)}
               </p>
             </div>
+
             <button
               type="button"
               onClick={onClose}
-              className="grid size-10 shrink-0 place-items-center rounded-full bg-white/80 text-[#636366] shadow-lg shadow-black/5"
+              className="grid size-9 shrink-0 place-items-center rounded-full bg-white/80 text-[#636366] shadow-lg shadow-black/5"
               aria-label="Close intro"
             >
-              <X size={18} />
+              <X size={17} />
             </button>
           </div>
         </div>
 
-        <div className="grid gap-3 p-5">
-          <div className="grid gap-3 sm:grid-cols-3">
-            {[
-              [String(todayEvents.length), "events today", "#007aff"],
-              [
-                String(todayTasks.filter((task) => !task.done).length),
-                "open tasks",
-                "#34c759",
-              ],
-              [
-                String(alerts.filter((alert) => !alert.done).length),
-                "pending alerts",
-                "#ff9500",
-              ],
-            ].map(([value, label, color]) => (
-              <div
-                key={label}
-                className="rounded-[26px] bg-[#f8f7ff] p-4 shadow-sm shadow-black/5"
-              >
-                <p className="text-3xl font-black" style={{ color }}>
-                  {value}
-                </p>
-                <p className="mt-1 text-xs font-black uppercase tracking-[0.12em] text-[#8e8e93]">
-                  {label}
-                </p>
-              </div>
-            ))}
+        <div className="space-y-3 p-4">
+          <div className="rounded-[24px] bg-[#f8f7ff] p-4 text-center shadow-sm shadow-black/5">
+            <p className="text-sm font-black text-[#18181b]">Today’s summary</p>
+            <p className="mt-2 text-sm font-bold leading-6 text-[#636366]">
+              {summary}
+            </p>
           </div>
 
-          <div className="rounded-[28px] bg-white p-4 shadow-lg shadow-black/5">
-            <p className="text-sm font-black text-[#18181b]">
-              Today&apos;s preview
-            </p>
-            <div className="mt-3 space-y-2">
-              {visibleEvents.length === 0 &&
-              openTasks.length === 0 &&
-              pendingAlerts.length === 0 ? (
-                <p className="rounded-2xl bg-[#f8f7ff] px-3 py-3 text-sm font-bold text-[#636366]">
-                  Your day is open. Add a plan, a focus block, or a task when
-                  you&apos;re ready.
-                </p>
-              ) : (
-                <>
-                  {visibleEvents.map((event) => (
-                    <div
-                      key={`intro-event-${event.id}`}
-                      className="flex items-center gap-3 rounded-2xl bg-[#f8f7ff] px-3 py-2"
-                    >
-                      <CalendarDays size={16} className="text-[#007aff]" />
-                      <span className="min-w-0 flex-1 truncate text-sm font-bold text-[#18181b]">
-                        {event.time} · {event.title}
-                      </span>
-                    </div>
-                  ))}
-                  {openTasks.map((task) => (
-                    <div
-                      key={`intro-task-${task.id}`}
-                      className="flex items-center gap-3 rounded-2xl bg-[#f8f7ff] px-3 py-2"
-                    >
-                      <ListChecks size={16} className="text-[#34c759]" />
-                      <span className="min-w-0 flex-1 truncate text-sm font-bold text-[#18181b]">
-                        {task.title}
-                      </span>
-                    </div>
-                  ))}
-                  {pendingAlerts.map((alert) => (
-                    <div
-                      key={`intro-alert-${alert.id}`}
-                      className="flex items-center gap-3 rounded-2xl bg-[#f8f7ff] px-3 py-2"
-                    >
-                      <BellRing size={16} className="text-[#ff9500]" />
-                      <span className="min-w-0 flex-1 truncate text-sm font-bold text-[#18181b]">
-                        {alert.time} · {alert.title}
-                      </span>
-                    </div>
-                  ))}
-                </>
-              )}
+          <div className="grid grid-cols-3 gap-2">
+            <div className="rounded-2xl bg-[#f8f7ff] p-3 text-center">
+              <p className="text-xl font-black text-[#007aff]">
+                {todayEvents.length}
+              </p>
+              <p className="text-[10px] font-black uppercase tracking-[0.12em] text-[#8e8e93]">
+                Events
+              </p>
+            </div>
+
+            <div className="rounded-2xl bg-[#f8f7ff] p-3 text-center">
+              <p className="text-xl font-black text-[#34c759]">
+                {openTasks.length}
+              </p>
+              <p className="text-[10px] font-black uppercase tracking-[0.12em] text-[#8e8e93]">
+                Tasks
+              </p>
+            </div>
+
+            <div className="rounded-2xl bg-[#f8f7ff] p-3 text-center">
+              <p className="text-xl font-black text-[#ff9500]">
+                {pendingAlerts.length}
+              </p>
+              <p className="text-[10px] font-black uppercase tracking-[0.12em] text-[#8e8e93]">
+                Alerts
+              </p>
             </div>
           </div>
 
-          <div className="grid gap-3 sm:grid-cols-2">
+          {(nextEvent || nextTask || nextAlert) && (
+            <div className="rounded-[24px] bg-white p-3 shadow-lg shadow-black/5">
+              <p className="mb-2 text-xs font-black uppercase tracking-[0.14em] text-[#8e8e93]">
+                Next up
+              </p>
+
+              {nextEvent && (
+                <div className="flex items-center gap-2 rounded-2xl bg-[#f8f7ff] px-3 py-2">
+                  <CalendarDays size={15} className="text-[#007aff]" />
+                  <span className="min-w-0 flex-1 truncate text-xs font-black text-[#18181b]">
+                    {nextEvent.time} · {nextEvent.title}
+                  </span>
+                </div>
+              )}
+
+              {!nextEvent && nextTask && (
+                <div className="flex items-center gap-2 rounded-2xl bg-[#f8f7ff] px-3 py-2">
+                  <ListChecks size={15} className="text-[#34c759]" />
+                  <span className="min-w-0 flex-1 truncate text-xs font-black text-[#18181b]">
+                    {nextTask.title}
+                  </span>
+                </div>
+              )}
+
+              {!nextEvent && !nextTask && nextAlert && (
+                <div className="flex items-center gap-2 rounded-2xl bg-[#f8f7ff] px-3 py-2">
+                  <BellRing size={15} className="text-[#ff9500]" />
+                  <span className="min-w-0 flex-1 truncate text-xs font-black text-[#18181b]">
+                    {nextAlert.time} · {nextAlert.title}
+                  </span>
+                </div>
+              )}
+            </div>
+          )}
+
+          <div className="grid grid-cols-2 gap-2">
             <button
               type="button"
               onClick={onSkipNextTime}
               disabled={saving}
-              className="h-12 rounded-full bg-[#f2f2f7] text-sm font-black text-[#636366] disabled:opacity-60"
+              className="h-11 rounded-full bg-[#f2f2f7] text-xs font-black text-[#636366] disabled:opacity-60"
             >
               {saving ? "Saving..." : "Don’t show again"}
             </button>
+
             <button
               type="button"
               onClick={onClose}
-              className="h-12 rounded-full bg-[#007aff] text-sm font-black text-white shadow-lg shadow-[#007aff]/25"
+              className="h-11 rounded-full bg-[#007aff] text-xs font-black text-white shadow-lg shadow-[#007aff]/25"
             >
-              Open my calendar
+              Open calendar
             </button>
           </div>
         </div>
