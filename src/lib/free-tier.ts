@@ -13,7 +13,7 @@ export type AppCalendar = {
     email: string;
     displayName?: string;
     role: "owner" | "editor" | "viewer";
-    status: "pending" | "accepted";
+    status: "pending" | "accepted" | "declined";
   }>;
 };
 

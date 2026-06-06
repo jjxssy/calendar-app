@@ -207,9 +207,7 @@ html[data-theme="dark"] .input-shell {
 
 html.dark input:not(.arc-search-input),
 html[data-theme="dark"] input:not(.arc-search-input) {
-  background: var(--surface-muted) !important;
   color: var(--foreground) !important;
-  border: 1px solid var(--border-soft) !important;
 }
 
 html.dark .arc-search-input,

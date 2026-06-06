@@ -62,8 +62,8 @@ function accessibleEventWhere(user: { id: string; email: string }) {
       // Legacy / repaired ownership by email
       { user: { email: user.email } },
       { calendar: { owner: { email: user.email } } },
-      { calendar: { members: { some: { email: user.email } } } },
-      { shares: { some: { email: user.email } } },
+      { calendar: { members: { some: { email: user.email, status: "accepted" as const } } } },
+      { shares: { some: { email: user.email, status: "accepted" as const } } },
     ],
   };
 }

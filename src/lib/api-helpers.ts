@@ -128,7 +128,7 @@ export async function ensureEvent(userId: string, eventId: string) {
         { calendar: { ownerId: user.id } },
         { calendar: { owner: { email: user.email } } },
         { calendar: { members: { some: { userId: user.id, status: "accepted" } } } },
-        { calendar: { members: { some: { email: user.email } } } },
+        { calendar: { members: { some: { email: user.email, status: "accepted" } } } },
       ],
     },
     include: { calendar: { include: { members: true, owner: true } } },

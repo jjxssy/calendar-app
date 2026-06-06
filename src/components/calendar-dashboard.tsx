@@ -169,7 +169,7 @@ type DbMember = {
   user?: { id: string; name?: string | null; email: string } | null;
   displayName?: string | null;
   role: "owner" | "editor" | "viewer";
-  status: "pending" | "accepted";
+  status: "pending" | "accepted" | "declined";
   userId?: string | null;
 };
 
@@ -868,6 +868,7 @@ export default function CalendarDashboard() {
   const workspaceMutationVersion = useRef(0);
   const workspaceLoadVersion = useRef(0);
   const visitedSettingsRef = useRef(false);
+  const notifiedInvitationIdsRef = useRef<Set<string>>(new Set());
   const previousTabRef = useRef<AppTab>("calendar");
   const [session, setSession] = useState<AppSession | null>(() =>
     readSession(),
@@ -902,6 +903,7 @@ export default function CalendarDashboard() {
     [],
   );
   const [calendarInvitations, setCalendarInvitations] = useState<CalendarInvitation[]>([]);
+  const [alertsSeen, setAlertsSeen] = useState(true);
   const [standaloneTasks, setStandaloneTasks] = useState<StandaloneTask[]>([]);
   const [activeCategory, setActiveCategory] = useState<string | "all">("all");
   const [calendarDraft, setCalendarDraft] = useState({
@@ -1316,6 +1318,9 @@ export default function CalendarDashboard() {
     );
   }, [alertItems, normalizedWorkspaceQuery]);
 
+  const hasNewAlerts =
+    calendarInvitations.length > 0 && activeTab !== "alerts" && !alertsSeen;
+
   const unboundUndoneTasks = useMemo(
     () => standaloneTasks.filter((task) => !task.done && !task.eventId),
     [standaloneTasks],
@@ -1395,6 +1400,43 @@ export default function CalendarDashboard() {
       setStatsRange("monthly");
     }
   }, [isPremium, statsRange]);
+
+  useEffect(() => {
+    if (activeTab === "alerts") {
+      setAlertsSeen(true);
+    }
+  }, [activeTab]);
+
+  useEffect(() => {
+    if (calendarInvitations.length === 0) return;
+
+    const newInvitations = calendarInvitations.filter(
+      (invitation) => !notifiedInvitationIdsRef.current.has(invitation.id),
+    );
+
+    if (newInvitations.length === 0) return;
+
+    newInvitations.forEach((invitation) => {
+      notifiedInvitationIdsRef.current.add(invitation.id);
+    });
+
+    if (activeTab !== "alerts") {
+      setAlertsSeen(false);
+    }
+
+    const firstInvite = newInvitations[0];
+    const message =
+      newInvitations.length === 1
+        ? `New shared calendar invite: ${firstInvite.calendar.name}`
+        : `${newInvitations.length} new shared calendar invites`;
+
+    pushToast(message, "info");
+
+    void showArcgendaNotification(
+      message,
+      settings.notifications.vibration,
+    );
+  }, [activeTab, calendarInvitations, settings.notifications.vibration]);
 
   function markBusy(action: string, busy: boolean) {
     setBusyActions((current) => {
@@ -1660,9 +1702,11 @@ export default function CalendarDashboard() {
 
       setEvents(mappedEvents);
 
-      setSelectedDate(today);
-      setVisibleMonth(startOfMonth(today));
-      setActiveCategory("all");
+      if (!workspaceReady) {
+        setSelectedDate(today);
+        setVisibleMonth(startOfMonth(today));
+        setActiveCategory("all");
+      }
       setDraft((current) => ({
         ...current,
         category: current.category || loadedCategories[0]?.id || "",
@@ -2206,14 +2250,21 @@ export default function CalendarDashboard() {
 
   function openEditEvent(event: CalendarEvent) {
     if (
-      event.status === "cancelled" ||
+      event.status === "archived" ||
       composerSubmitting ||
       isBusy(`event:${event.id}`)
     )
       return;
+
+    const existingTag = tags.find((tag) => tag.id === event.category);
+    const safeCategory = existingTag?.id ?? tags[0]?.id ?? "";
+
     setEditingId(event.id);
     setComposerKind("event");
-    setDraft(eventToDraft(event));
+    setDraft({
+      ...eventToDraft(event),
+      category: safeCategory,
+    });
     setSelectedTaskIds([]);
     setComposerOpen(true);
   }
@@ -3060,29 +3111,72 @@ export default function CalendarDashboard() {
     );
   }
 
-  async function addCalendarMember(event: FormEvent<HTMLFormElement>) {
+   async function addCalendarMember(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+
     const action = "calendar:add-member";
     if (isBusy(action)) return;
+
     const email = memberDraft.email.trim().toLowerCase();
     if (!email) return;
+
     const selectedCalendar = calendars.find(
       (calendar) => calendar.id === memberDraft.calendarId,
     );
+
     const sharedCalendarUsed = calendars.some(
       (calendar) => calendar.shared && calendar.id !== memberDraft.calendarId,
     );
-    if (!selectedCalendar || (!selectedCalendar.shared && sharedCalendarUsed))
+
+    if (!selectedCalendar || (!selectedCalendar.shared && sharedCalendarUsed)) {
+      setWorkspaceMessage("Free plan allows one shared calendar.");
       return;
+    }
 
     markBusy(action, true);
+
     try {
-      await apiJson(`/api/calendars/${memberDraft.calendarId}/members`, {
+      const payload = await apiJson<{
+        member: {
+          id: string;
+          userId?: string | null;
+          email: string;
+          displayName?: string | null;
+          role: "owner" | "editor" | "viewer";
+          status: "pending" | "accepted";
+        };
+        note?: string;
+      }>(`/api/calendars/${memberDraft.calendarId}/members`, {
         method: "POST",
         body: JSON.stringify({ email, role: memberDraft.role }),
       });
-      void loadWorkspace();
+
+      setCalendars((current) =>
+        current.map((calendar) =>
+          calendar.id === memberDraft.calendarId
+            ? {
+                ...calendar,
+                shared: true,
+                members: [
+                  ...calendar.members.filter(
+                    (member) => member.id !== payload.member.id,
+                  ),
+                  {
+                    id: payload.member.id,
+                    userId: payload.member.userId,
+                    email: payload.member.email,
+                    displayName: payload.member.displayName ?? undefined,
+                    role: payload.member.role,
+                    status: payload.member.status,
+                  },
+                ],
+              }
+            : calendar,
+        ),
+      );
+
       setMemberDraft((current) => ({ ...current, email: "" }));
+      setWorkspaceMessage("Invite added.");
     } catch (error) {
       setWorkspaceMessage(
         error instanceof Error ? error.message : "Could not add invite.",
@@ -3168,44 +3262,95 @@ export default function CalendarDashboard() {
     memberId: string,
     role: "owner" | "editor" | "viewer",
   ) {
+    const action = `calendar:${calendarId}:member:${memberId}:update`;
+    if (isBusy(action)) return;
+
+    if (
+      role === "owner" &&
+      !window.confirm(
+        "Transfer ownership to this member? You will no longer be the owner.",
+      )
+    ) {
+      return;
+    }
+
+    const previousCalendars = calendars;
+
+    setCalendars((current) =>
+      current.map((calendar) =>
+        calendar.id === calendarId
+          ? {
+              ...calendar,
+              members: calendar.members.map((member) =>
+                member.id === memberId ? { ...member, role } : member,
+              ),
+            }
+          : calendar,
+      ),
+    );
+
+    markBusy(action, true);
+
     try {
-      if (
-        role === "owner" &&
-        !window.confirm(
-          "Transfer ownership to this member? You will no longer be the owner.",
-        )
-      ) {
-        return;
-      }
       await apiJson(`/api/calendars/${calendarId}/members/${memberId}`, {
         method: "PATCH",
         body: JSON.stringify({ role }),
       });
-      await loadWorkspace();
-      setWorkspaceMessage(
-        role === "owner"
-          ? "Ownership transferred."
-          : "Member permissions updated.",
-      );
+
+      if (role === "owner") {
+        await loadWorkspace({
+          message: "Ownership transferred.",
+          showLoading: false,
+        });
+      } else {
+        setWorkspaceMessage("Member permissions updated.");
+      }
     } catch (error) {
+      setCalendars(previousCalendars);
       setWorkspaceMessage(
         error instanceof Error ? error.message : "Could not update member.",
       );
+    } finally {
+      markBusy(action, false);
     }
   }
 
   async function removeCalendarMember(calendarId: string, memberId: string) {
+    const action = `calendar:${calendarId}:member:${memberId}:remove`;
+    if (isBusy(action)) return;
+
+    if (!window.confirm("Remove this person from the calendar?")) return;
+
+    const previousCalendars = calendars;
+
+    setCalendars((current) =>
+      current.map((calendar) =>
+        calendar.id === calendarId
+          ? {
+              ...calendar,
+              members: calendar.members.filter(
+                (member) => member.id !== memberId,
+              ),
+            }
+          : calendar,
+      ),
+    );
+
+    markBusy(action, true);
+
     try {
-      if (!window.confirm("Remove this person from the calendar?")) return;
       await apiJson(`/api/calendars/${calendarId}/members/${memberId}`, {
         method: "DELETE",
       });
-      await loadWorkspace();
+
       setWorkspaceMessage("Member removed.");
     } catch (error) {
+      setCalendars(previousCalendars);
       setWorkspaceMessage(
         error instanceof Error ? error.message : "Could not remove member.",
       );
+    } finally {
+      markBusy(action, false);
     }
   }
 
@@ -3213,34 +3358,62 @@ export default function CalendarDashboard() {
     const ownMember = calendar.members.find(
       (member) => member.userId === session?.user.id,
     );
+
     if (!ownMember) return;
-    try {
-      if (
-        !window.confirm(
-          `Leave "${calendar.name}"? It will no longer count toward your free calendar limit.`,
-        )
+
+    const action = `calendar:${calendar.id}:leave`;
+    if (isBusy(action)) return;
+
+    if (
+      !window.confirm(
+        `Leave "${calendar.name}"? It will no longer count toward your free calendar limit.`,
       )
-        return;
+    ) {
+      return;
+    }
+
+    const previousCalendars = calendars;
+    const previousEvents = events;
+
+    setCalendars((current) =>
+      current.filter((item) => item.id !== calendar.id),
+    );
+
+    setEvents((current) =>
+      current.filter((event) => event.calendarId !== calendar.id),
+    );
+
+    markBusy(action, true);
+
+    try {
       await apiJson(`/api/calendars/${calendar.id}/members/${ownMember.id}`, {
         method: "DELETE",
       });
-      await loadWorkspace();
+
       setWorkspaceMessage("You left the shared calendar.");
     } catch (error) {
+      setCalendars(previousCalendars);
+      setEvents(previousEvents);
       setWorkspaceMessage(
         error instanceof Error
           ? error.message
           : "Could not leave shared calendar.",
       );
+    } finally {
+      markBusy(action, false);
     }
   }
 
-    async function respondToCalendarInvitation(
+  async function respondToCalendarInvitation(
     invitationId: string,
     action: "accept" | "decline",
   ) {
     const busyKey = `calendar-invitation:${invitationId}:${action}`;
     if (isBusy(busyKey)) return;
+
+    const invitation = calendarInvitations.find(
+      (item) => item.id === invitationId,
+    );
 
     markBusy(busyKey, true);
 
@@ -3251,14 +3424,31 @@ export default function CalendarDashboard() {
       });
 
       setCalendarInvitations((current) =>
-        current.filter((invitation) => invitation.id !== invitationId),
+        current.filter((item) => item.id !== invitationId),
       );
 
-      if (action === "accept") {
-        await loadWorkspace({
-          message: "Shared calendar accepted.",
-          showLoading: false,
-        });
+      if (action === "accept" && invitation) {
+        setCalendars((current) => [
+          ...current.filter((calendar) => calendar.id !== invitation.calendar.id),
+          mapCalendar(
+            {
+              ...invitation.calendar,
+              members: invitation.calendar.members.map((member) =>
+                member.id === invitationId
+                  ? {
+                      ...member,
+                      userId: session?.user.id,
+                      email: session?.user.email ?? member.email,
+                      status: "accepted",
+                    }
+                  : member,
+              ),
+            },
+            session,
+          ),
+        ]);
+
+        setWorkspaceMessage("Shared calendar accepted.");
       } else {
         setWorkspaceMessage("Shared calendar declined.");
       }
@@ -3612,7 +3802,6 @@ export default function CalendarDashboard() {
             setQuery={setQuery}
             onAdd={openNewItem}
             onLogout={() => {
-              setSession(null);
               void logout("/login");
             }}
           />
@@ -3770,7 +3959,16 @@ export default function CalendarDashboard() {
               </div>
             )}
           </section>
-          <BottomTabs activeTab={activeTab} setActiveTab={setActiveTab} />
+          <BottomTabs
+            activeTab={activeTab}
+            setActiveTab={(tab) => {
+              setActiveTab(tab);
+              if (tab === "alerts") {
+                setAlertsSeen(true);
+              }
+            }}
+            hasNewAlerts={hasNewAlerts}
+          />
         </section>
 
         <aside className="hidden min-h-[calc(100dvh-48px)] grid-rows-[auto_1fr] gap-6 overflow-y-auto lg:grid">
@@ -5678,6 +5876,24 @@ function SettingsTab({
   );
 }
 
+function memberStatusClasses(status: AppCalendar["members"][number]["status"]) {
+  if (status === "accepted") {
+    return "bg-[#e8f8ee] text-[#1f8f45] ring-[#34c759]/20";
+  }
+
+  if (status === "declined") {
+    return "bg-[#ffe8e6] text-[#c82d21] ring-[#ff3b30]/20";
+  }
+
+  return "bg-[#f2f2f7] text-[#6b7280] ring-[#8e8e93]/20";
+}
+
+function memberStatusLabel(status: AppCalendar["members"][number]["status"]) {
+  if (status === "accepted") return "Accepted";
+  if (status === "declined") return "Declined";
+  return "Pending";
+}
+
 function CalendarManagementRow({
   calendar,
   onUpdate,
@@ -5810,8 +6026,8 @@ function CalendarManagementRow({
               className="grid gap-2 rounded-2xl bg-[#f2f2f7] p-2 text-xs font-bold text-[#8e8e93] sm:grid-cols-[1fr_auto_auto] sm:items-center"
             >
               <span className="min-w-0 truncate">
-                {member.displayName || member.email} · {member.status}
-              </span>
+  {member.displayName || member.email} · {member.status}
+</span>
               {canEdit && member.role !== "owner" ? (
                 <>
                   <select
@@ -6976,9 +7192,11 @@ function DesktopPanel({
 function BottomTabs({
   activeTab,
   setActiveTab,
+  hasNewAlerts,
 }: {
   activeTab: AppTab;
   setActiveTab: (tab: AppTab) => void;
+  hasNewAlerts: boolean;
 }) {
   const items = [
     { id: "calendar" as const, label: "Calendar", icon: CalendarDays },
@@ -6995,10 +7213,13 @@ function BottomTabs({
             key={item.id}
             onClick={() => setActiveTab(item.id)}
             className={[
-              "flex h-14 flex-col items-center justify-center gap-1 rounded-2xl transition active:scale-95",
+              "relative flex h-14 flex-col items-center justify-center gap-1 rounded-2xl transition active:scale-95",
               activeTab === item.id ? "text-[#007aff]" : "text-[#8e8e93]",
             ].join(" ")}
           >
+            {hasNewAlerts && item.id === "alerts" && (
+              <span className="absolute -top-1 -right-1 flex size-3 items-center justify-center rounded-full bg-[#ff3b30] shadow-lg" />
+            )}
             <item.icon
               size={22}
               strokeWidth={activeTab === item.id ? 2.5 : 2.1}
