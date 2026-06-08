@@ -70,6 +70,7 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
           shares: true,
         },
       });
+
       const moved = existing.calendarId !== updated.calendarId;
       if (moved) {
         const calendars = await tx.calendar.findMany({

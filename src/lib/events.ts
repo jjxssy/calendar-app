@@ -2,6 +2,7 @@ export type EventCategory = string;
 export type EventPriority = "low" | "normal" | "high";
 export type Recurrence = "none" | "daily" | "weekly" | "monthly" | "yearly";
 export type EventStatus = "scheduled" | "completed" | "cancelled" | "archived";
+export type CalendarRoleValue = "owner" | "editor" | "viewer";
 
 export type RescheduleReminder = {
   id: string;
@@ -32,7 +33,21 @@ export type CalendarEvent = {
   cancelledAt?: string;
   createdBy?: string;
   lastEditedBy?: string;
-  sharedWith?: Array<{ id: string; email: string; role: "editor" | "viewer"; status: "pending" | "accepted" | "declined"; }>;
+  createdByName?: string;
+  updatedByName?: string;
+  ownerName?: string;
+  sharedPreviewRole?: "viewer" | "editor";
+  sharedById?: string;
+  sharedRole?: CalendarRoleValue;
+  isSharedPreview?: boolean;
+  isOwner?: boolean;
+  canEdit?: boolean;
+  sharedWith?: Array<{
+    id: string;
+    email: string;
+    role: "editor" | "viewer";
+    status: "pending" | "accepted" | "declined";
+  }>;
   activity?: Array<{ id: string; text: string; at: string }>;
   rescheduleReminders: RescheduleReminder[];
   tasks: Array<{ id: string; title: string; done: boolean }>;

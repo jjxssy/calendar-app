@@ -1,4 +1,11 @@
-import { ApiError, fail, ok, readBody, requireUser, stringValue } from "@/lib/api-helpers";
+import {
+  ApiError,
+  fail,
+  ok,
+  readBody,
+  requireUser,
+  stringValue,
+} from "@/lib/api-helpers";
 import { prisma } from "@/lib/prisma";
 
 export async function GET() {
@@ -12,15 +19,20 @@ export async function GET() {
       },
       include: {
         event: {
-  include: {
-    calendar: { include: { members: true } },
-    category: true,
-    user: { select: { id: true, email: true, name: true } },
-    tasks: {
+          include: {
+            calendar: { include: { members: true } },
+            category: true,
+            user: { select: { id: true, email: true, name: true } },
+            tasks: {
               include: {
                 reminders: true,
                 event: {
-                  select: { id: true, title: true, status: true, startDate: true },
+                  select: {
+                    id: true,
+                    title: true,
+                    status: true,
+                    startDate: true,
+                  },
                 },
               },
               orderBy: { createdAt: "asc" },
@@ -108,7 +120,10 @@ export async function POST(request: Request) {
     });
 
     if (!targetCalendar) {
-      throw new ApiError("Choose one of your personal non-shared calendars.", 403);
+      throw new ApiError(
+        "Choose one of your personal non-shared calendars.",
+        403,
+      );
     }
 
     const copiedEvent = await prisma.$transaction(async (tx) => {
@@ -129,9 +144,11 @@ export async function POST(request: Request) {
           createdById: user.id,
           updatedById: user.id,
           title: share.event.title,
-          description: share.event.description
-            ? `${share.event.description}\n\nShared event preview`
-            : "Shared event preview",
+          description: `${
+            share.event.description?.trim()
+              ? `${share.event.description.trim()}\n\n`
+              : ""
+          }Shared event preview\n[[arcgenda-shared-event:${share.role}:${share.event.userId}]]`,
           startDate: share.event.startDate,
           endDate: share.event.endDate,
           allDay: share.event.allDay,
@@ -160,7 +177,12 @@ export async function POST(request: Request) {
             include: {
               reminders: true,
               event: {
-                select: { id: true, title: true, status: true, startDate: true },
+                select: {
+                  id: true,
+                  title: true,
+                  status: true,
+                  startDate: true,
+                },
               },
             },
             orderBy: { createdAt: "asc" },

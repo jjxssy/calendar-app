@@ -3,6 +3,20 @@ import { prisma } from "@/lib/prisma";
 
 type Params = Promise<{ id: string }>;
 
+const EVENT_SHARE_FREE_MONTHLY_LIMIT = 2;
+const roles = ["editor", "viewer"] as const;
+
+function isValidEmail(email: string) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+}
+
+function startOfCurrentMonth() {
+  const date = new Date();
+  date.setDate(1);
+  date.setHours(0, 0, 0, 0);
+  return date;
+}
+
 async function requireEventSharingAccess(eventId: string, userId: string) {
   const event = await prisma.event.findFirst({
     where: {
@@ -23,8 +37,10 @@ async function requireEventSharingAccess(eventId: string, userId: string) {
         },
       ],
     },
-    include: {
-      shares: true,
+    select: {
+      id: true,
+      title: true,
+      userId: true,
     },
   });
 
@@ -45,41 +61,85 @@ export async function POST(
     const body = await readBody(request);
 
     const email = stringValue(body.email)?.toLowerCase() ?? "";
-    if (!email) throw new ApiError("Email is required.");
-    const role = stringValue(body.role) || "viewer";
+    const role = stringValue(body.role) ?? "viewer";
 
     if (!email) throw new ApiError("Email is required.");
-    if (role !== "viewer" && role !== "editor") {
-      throw new ApiError("Role must be viewer or editor.");
+    if (!isValidEmail(email)) {
+      throw new ApiError("Enter a valid email address.");
     }
 
-    await requireEventSharingAccess(eventId, user.id);
+    if (!roles.includes(role as (typeof roles)[number])) {
+      throw new ApiError("Role must be editor or viewer.");
+    }
 
-    const share = await prisma.eventShare.upsert({
+    const event = await requireEventSharingAccess(eventId, user.id);
+
+    const targetUser = await prisma.user.findUnique({
+      where: { email },
+      select: { id: true, email: true, name: true },
+    });
+
+    if (!targetUser) {
+      throw new ApiError("This user does not have an Arcgenda account yet.");
+    }
+
+    if (targetUser.id === user.id) {
+      throw new ApiError("You cannot share an event with yourself.");
+    }
+
+    const existingShare = await prisma.eventShare.findFirst({
       where: {
-        eventId_email: {
-          eventId,
-          email,
-        },
-      },
-      update: {
-        role,
-        status: "pending",
-      },
-      create: {
         eventId,
-        email,
-        role,
-        status: "pending",
+        email: targetUser.email,
       },
     });
+
+    if (user.plan !== "premium" && !existingShare) {
+      const sharedEventsThisMonth = await prisma.eventShare.count({
+        where: {
+          createdAt: {
+            gte: startOfCurrentMonth(),
+          },
+          event: {
+            userId: user.id,
+          },
+        },
+      });
+
+      if (sharedEventsThisMonth >= EVENT_SHARE_FREE_MONTHLY_LIMIT) {
+        throw new ApiError(
+          "Free plan allows 2 shared event invites per month.",
+          403,
+        );
+      }
+    }
+
+    const share = existingShare
+      ? await prisma.eventShare.update({
+          where: { id: existingShare.id },
+          data: {
+            userId: targetUser.id,
+            email: targetUser.email,
+            role: role as (typeof roles)[number],
+            status: "pending",
+          },
+        })
+      : await prisma.eventShare.create({
+          data: {
+            eventId,
+            userId: targetUser.id,
+            email: targetUser.email,
+            role: role as (typeof roles)[number],
+            status: "pending",
+          },
+        });
 
     await prisma.activityHistory.create({
       data: {
         eventId,
         userId: user.id,
         action: "event.share_created",
-        details: `Share invite sent to ${email}`,
+        details: `Share invite sent to ${targetUser.email}`,
       },
     });
 

@@ -145,6 +145,11 @@ type TaskListItem = {
   time?: string;
 };
 
+type SharedPreviewCalendarEvent = CalendarEvent & {
+  sharedPreviewRole?: "viewer" | "editor";
+  sharedById?: string;
+};
+
 type CalendarData = {
   tags: CategoryStyle[];
   calendars: AppCalendar[];
@@ -244,6 +249,7 @@ type DbEvent = {
   categoryId?: string | null;
   createdById?: string | null;
   updatedById?: string | null;
+  user?: { id: string; name?: string | null; email: string } | null;
   createdBy?: { id: string; name?: string | null; email: string } | null;
   updatedBy?: { id: string; name?: string | null; email: string } | null;
   title: string;
@@ -581,10 +587,17 @@ function mapReminder(reminder: DbReminder): RescheduleReminder {
   };
 }
 
-function mapEvent(event: DbEvent): CalendarEvent {
+function mapEvent(event: DbEvent): SharedPreviewCalendarEvent {
   const start = new Date(event.startDate);
   const eventDate = dateKeyFromDbDate(event.startDate);
   const eventTime = timeValueFromDbDate(event.startDate);
+  const rawNotes = event.description ?? "";
+  const sharedPreviewMatch = rawNotes.match(
+    /\[\[arcgenda-shared-event:(viewer|editor):([^\]]+)\]\]/,
+  );
+  const cleanNotes = rawNotes
+    .replace(/\n?\n?\[\[arcgenda-shared-event:(viewer|editor):[^\]]+\]\]/, "")
+    .trim();
   return {
     id: event.id,
     calendarId: event.calendarId ?? undefined,
@@ -596,14 +609,25 @@ function mapEvent(event: DbEvent): CalendarEvent {
     priority: event.priority === "urgent" ? "high" : event.priority,
     recurrence: event.recurrence ?? "none",
     location: event.location ?? "No location",
-    notes: event.description ?? "",
+    notes: cleanNotes,
+    sharedPreviewRole: sharedPreviewMatch?.[1] as
+      | "viewer"
+      | "editor"
+      | undefined,
+    sharedById: sharedPreviewMatch?.[2],
     allDay: event.allDay,
     pinned: event.pinned,
     status: event.status,
     cancellationReason: event.cancellationReason ?? undefined,
     cancelledAt: event.cancelledAt ?? undefined,
-    createdBy: displayNameForUser(event.createdBy, event.calendar),
-    lastEditedBy: displayNameForUser(event.updatedBy, event.calendar),
+    createdBy: displayNameForUser(
+      event.createdBy ?? event.user,
+      event.calendar,
+    ),
+    lastEditedBy: displayNameForUser(
+      event.updatedBy ?? event.user,
+      event.calendar,
+    ),
     sharedWith: event.shares?.map((share) => ({
       id: share.id,
       email: share.email,
@@ -871,6 +895,15 @@ function hourFromTime(time: string) {
   return Number.isFinite(hour) ? hour : 8;
 }
 
+function canManageEvent(event: CalendarEvent) {
+  const sharedEvent = event as SharedPreviewCalendarEvent;
+  return sharedEvent.sharedPreviewRole !== "viewer";
+}
+
+function canShareEvent(event: CalendarEvent) {
+  const sharedEvent = event as SharedPreviewCalendarEvent;
+  return !sharedEvent.sharedPreviewRole;
+}
 export default function CalendarDashboard() {
   const router = useRouter();
   const today = useMemo(() => new Date(), []);
@@ -922,6 +955,7 @@ export default function CalendarDashboard() {
   const [eventInviteCalendarTargets, setEventInviteCalendarTargets] = useState<
     Record<string, string>
   >({});
+  const [openShareInfo, setOpenShareInfo] = useState<Record<string, boolean>>({});
   const [alertsSeen, setAlertsSeen] = useState(true);
   const [standaloneTasks, setStandaloneTasks] = useState<StandaloneTask[]>([]);
   const [activeCategory, setActiveCategory] = useState<string | "all">("all");
@@ -1021,12 +1055,12 @@ export default function CalendarDashboard() {
     [calendars],
   );
   const nonSharedCalendars = useMemo(
-  () =>
-    calendars.filter(
-      (calendar) => calendar.role === "owner" && !calendar.shared,
-    ),
-  [calendars],
-);
+    () =>
+      calendars.filter(
+        (calendar) => calendar.role === "owner" && !calendar.shared,
+      ),
+    [calendars],
+  );
 
   const hasVisibleCalendars = visibleCalendarIds.size > 0;
 
@@ -1442,72 +1476,60 @@ export default function CalendarDashboard() {
   }, [activeTab]);
 
   useEffect(() => {
-  if (activeTab === "alerts") {
-    setAlertsSeen(true);
-  }
-}, [activeTab]);
+    if (calendarInvitations.length === 0) return;
 
-useEffect(() => {
-  if (calendarInvitations.length === 0) return;
+    const newInvitations = calendarInvitations.filter(
+      (invitation) => !notifiedInvitationIdsRef.current.has(invitation.id),
+    );
 
-  const newInvitations = calendarInvitations.filter(
-    (invitation) => !notifiedInvitationIdsRef.current.has(invitation.id),
-  );
+    if (newInvitations.length === 0) return;
 
-  if (newInvitations.length === 0) return;
+    newInvitations.forEach((invitation) => {
+      notifiedInvitationIdsRef.current.add(invitation.id);
+    });
 
-  newInvitations.forEach((invitation) => {
-    notifiedInvitationIdsRef.current.add(invitation.id);
-  });
+    if (activeTab !== "alerts") {
+      setAlertsSeen(false);
+    }
 
-  if (activeTab !== "alerts") {
-    setAlertsSeen(false);
-  }
+    const firstInvite = newInvitations[0];
+    const message =
+      newInvitations.length === 1
+        ? `New shared calendar invite: ${firstInvite.calendar.name}`
+        : `${newInvitations.length} new shared calendar invites`;
 
-  const firstInvite = newInvitations[0];
-  const message =
-    newInvitations.length === 1
-      ? `New shared calendar invite: ${firstInvite.calendar.name}`
-      : `${newInvitations.length} new shared calendar invites`;
+    pushToast(message, "info");
 
-  pushToast(message, "info");
+    void showArcgendaNotification(message, settings.notifications.vibration);
+  }, [activeTab, calendarInvitations, settings.notifications.vibration]);
 
-  void showArcgendaNotification(
-    message,
-    settings.notifications.vibration,
-  );
-}, [activeTab, calendarInvitations, settings.notifications.vibration]);
+  useEffect(() => {
+    if (eventInvitations.length === 0) return;
 
-useEffect(() => {
-  if (eventInvitations.length === 0) return;
+    const newInvitations = eventInvitations.filter(
+      (invitation) => !notifiedEventInvitationIdsRef.current.has(invitation.id),
+    );
 
-  const newInvitations = eventInvitations.filter(
-    (invitation) => !notifiedEventInvitationIdsRef.current.has(invitation.id),
-  );
+    if (newInvitations.length === 0) return;
 
-  if (newInvitations.length === 0) return;
+    newInvitations.forEach((invitation) => {
+      notifiedEventInvitationIdsRef.current.add(invitation.id);
+    });
 
-  newInvitations.forEach((invitation) => {
-    notifiedEventInvitationIdsRef.current.add(invitation.id);
-  });
+    if (activeTab !== "alerts") {
+      setAlertsSeen(false);
+    }
 
-  if (activeTab !== "alerts") {
-    setAlertsSeen(false);
-  }
+    const firstInvite = newInvitations[0];
+    const message =
+      newInvitations.length === 1
+        ? `New event invite: ${firstInvite.event.title}`
+        : `${newInvitations.length} new event invites`;
 
-  const firstInvite = newInvitations[0];
-  const message =
-    newInvitations.length === 1
-      ? `New event invite: ${firstInvite.event.title}`
-      : `${newInvitations.length} new event invites`;
+    pushToast(message, "info");
 
-  pushToast(message, "info");
-
-  void showArcgendaNotification(
-    message,
-    settings.notifications.vibration,
-  );
-}, [activeTab, eventInvitations, settings.notifications.vibration]);
+    void showArcgendaNotification(message, settings.notifications.vibration);
+  }, [activeTab, eventInvitations, settings.notifications.vibration]);
 
   function markBusy(action: string, busy: boolean) {
     setBusyActions((current) => {
@@ -2467,6 +2489,14 @@ useEffect(() => {
     }
   }
 
+  function canShareEventFromWorkspace(event: CalendarEvent) {
+    if (event.sharedPreviewRole) return false;
+
+    const calendar = calendars.find((item) => item.id === event.calendarId);
+
+    return calendar?.role === "owner";
+  }
+
   async function saveEvent(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     logDiagnostic("saveEvent() call");
@@ -2742,6 +2772,36 @@ useEffect(() => {
       setEvents(previousEvents);
       setWorkspaceMessage(
         error instanceof Error ? error.message : "Could not archive event.",
+      );
+    } finally {
+      markBusy(action, false);
+    }
+  }
+
+async function removeSharedEventFromMyCalendar(eventId: string) {
+    const action = `event:${eventId}:remove-shared-preview`;
+    if (isBusy(action)) return;
+
+    const previousEvents = events;
+
+    setEvents((currentEvents) =>
+      currentEvents.filter((event) => event.id !== eventId),
+    );
+
+    markBusy(action, true);
+
+    try {
+      await apiJson(`/api/events/${eventId}/share/remove-me`, {
+        method: "DELETE",
+      });
+
+      setWorkspaceMessage("Shared event removed from your calendar.");
+    } catch (error) {
+      setEvents(previousEvents);
+      setWorkspaceMessage(
+        error instanceof Error
+          ? error.message
+          : "Could not remove this shared event from your calendar.",
       );
     } finally {
       markBusy(action, false);
@@ -3842,6 +3902,88 @@ useEffect(() => {
     }
   }
 
+  async function updateEventShareRole(
+    eventId: string,
+    shareId: string,
+    role: "editor" | "viewer",
+  ) {
+    const action = `event:${eventId}:share:${shareId}:role`;
+    if (isBusy(action)) return;
+
+    const previousEvents = events;
+
+    setEvents((current) =>
+      current.map((event) =>
+        event.id === eventId
+          ? {
+              ...event,
+              sharedWith: (event.sharedWith ?? []).map((share) =>
+                share.id === shareId ? { ...share, role } : share,
+              ),
+            }
+          : event,
+      ),
+    );
+
+    markBusy(action, true);
+
+    try {
+      await apiJson(`/api/events/${eventId}/shares/${shareId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ role }),
+      });
+
+      setWorkspaceMessage("Recipient role updated.");
+    } catch (error) {
+      setEvents(previousEvents);
+      setWorkspaceMessage(
+        error instanceof Error ? error.message : "Could not update recipient.",
+      );
+    } finally {
+      markBusy(action, false);
+    }
+  }
+
+  async function removeEventShare(eventId: string, shareId: string) {
+    const action = `event:${eventId}:share:${shareId}:remove`;
+    if (isBusy(action)) return;
+
+    if (!window.confirm("Remove this recipient from the shared event?")) return;
+
+    const previousEvents = events;
+
+    setEvents((current) =>
+      current.map((event) =>
+        event.id === eventId
+          ? {
+              ...event,
+              sharedWith: (event.sharedWith ?? []).filter(
+                (share) => share.id !== shareId,
+              ),
+            }
+          : event,
+      ),
+    );
+
+    markBusy(action, true);
+
+    try {
+      await apiJson(`/api/events/${eventId}/shares/${shareId}`, {
+        method: "DELETE",
+      });
+
+      setWorkspaceMessage("Recipient removed.");
+    } catch (error) {
+      setEvents(previousEvents);
+      setWorkspaceMessage(
+        error instanceof Error ? error.message : "Could not remove recipient.",
+      );
+    } finally {
+      markBusy(action, false);
+    }
+  }
+
+
   function updateNotificationSetting(
     key: keyof AppSettings["notifications"],
     value: boolean | string,
@@ -4044,31 +4186,46 @@ useEffect(() => {
                   />
                 )}
                 <Agenda
-                  selectedDate={selectedDate}
-                  events={selectedEvents}
-                  tagFor={tagFor}
-                  onEdit={openEditEvent}
-                  onCancel={(event) => {
-                    setCancelTarget(event);
-                    setCancellationReason(event.cancellationReason ?? "");
-                    setCancelScope("series-cancel");
-                  }}
-                  onDelete={deleteEvent}
-                  onUndoCancel={undoCancelEvent}
-                  unboundTasks={unboundUndoneTasks}
-                  taskDrafts={eventTaskDrafts}
-                  setTaskDrafts={setEventTaskDrafts}
-                  onCreateTask={createTaskForEvent}
-                  onLinkTask={linkTaskToEvent}
-                  onToggleTask={toggleTask}
-                  onUnlinkTask={unlinkTaskFromEvent}
-                  onDeleteTask={deleteTask}
-                  onEditTask={editTaskTitle}
-                  calendars={calendars}
-                  shareDrafts={shareDrafts}
-                  setShareDrafts={setShareDrafts}
-                  onShareEvent={shareEvent}
-                />
+  selectedDate={selectedDate}
+  events={selectedEvents}
+  tagFor={tagFor}
+  onEdit={openEditEvent}
+  onCancel={(event: CalendarEvent) => {
+    setCancelTarget(event);
+    setCancellationReason(event.cancellationReason ?? "");
+    setCancelScope("series-cancel");
+  }}
+  onDelete={deleteEvent}
+  onUndoCancel={undoCancelEvent}
+  unboundTasks={unboundUndoneTasks}
+  taskDrafts={eventTaskDrafts}
+  shareDrafts={shareDrafts}
+  canShareEvent={canShareEventFromWorkspace}
+  onCreateTask={createTaskForEvent}
+  onLinkTask={(eventId: string, taskId: string) =>
+    linkTaskToEvent(taskId, eventId)
+  }
+  onRemoveSharedEvent={removeSharedEventFromMyCalendar}
+  onToggleTask={toggleTask}
+  onUnlinkTask={unlinkTaskFromEvent}
+  onDeleteTask={deleteTask}
+  onEditTask={editTaskTitle}
+  onTaskDraftChange={(eventId: string, value: string) =>
+    setEventTaskDrafts((current) => ({
+      ...current,
+      [eventId]: value,
+    }))
+  }
+  onShareDraftChange={(eventId: string, value: string) =>
+    setShareDrafts((current) => ({
+      ...current,
+      [eventId]: value,
+    }))
+  }
+  onShare={shareEvent}
+  onUpdateEventShareRole={updateEventShareRole}
+  onRemoveEventShare={removeEventShare}
+/>
               </>
             )}
             {activeTab === "tasks" && (
@@ -4090,6 +4247,8 @@ useEffect(() => {
                 eventInviteCalendarTargets={eventInviteCalendarTargets}
                 setEventInviteCalendarTargets={setEventInviteCalendarTargets}
                 nonSharedCalendars={nonSharedCalendars}
+                openShareInfo={openShareInfo}
+                setOpenShareInfo={setOpenShareInfo}
                 onCalendarInvitationResponse={respondToCalendarInvitation}
                 onEventInvitationResponse={respondToEventInvitation}
               />
@@ -4716,16 +4875,19 @@ function Agenda({
   onUndoCancel,
   unboundTasks,
   taskDrafts,
-  setTaskDrafts,
+  shareDrafts,
+  canShareEvent,
   onCreateTask,
   onLinkTask,
   onToggleTask,
   onUnlinkTask,
   onDeleteTask,
-  calendars,
-  shareDrafts,
-  setShareDrafts,
-  onShareEvent,
+  onTaskDraftChange,
+  onShareDraftChange,
+  onShare,
+  onUpdateEventShareRole,
+  onRemoveEventShare,
+  onRemoveSharedEvent,
 }: {
   selectedDate: Date;
   events: CalendarEvent[];
@@ -4736,17 +4898,24 @@ function Agenda({
   onUndoCancel: (id: string) => void;
   unboundTasks: StandaloneTask[];
   taskDrafts: Record<string, string>;
-  setTaskDrafts: (drafts: Record<string, string>) => void;
+  shareDrafts: Record<string, string>;
+  canShareEvent: (event: CalendarEvent) => boolean;
   onCreateTask: (eventId: string) => void;
   onLinkTask: (eventId: string, taskId: string) => void;
   onToggleTask: (taskId: string) => void;
   onUnlinkTask: (eventId: string, taskId: string) => void;
   onDeleteTask: (taskId: string) => void;
   onEditTask: (taskId: string, currentTitle: string) => void;
-  calendars: AppCalendar[];
-  shareDrafts: Record<string, string>;
-  setShareDrafts: (drafts: Record<string, string>) => void;
-  onShareEvent: (eventId: string) => void;
+  onTaskDraftChange: (eventId: string, value: string) => void;
+  onShareDraftChange: (eventId: string, value: string) => void;
+  onShare: (eventId: string) => void;
+  onRemoveSharedEvent: (eventId: string) => void;
+  onUpdateEventShareRole: (
+    eventId: string,
+    shareId: string,
+    role: "editor" | "viewer",
+  ) => void;
+  onRemoveEventShare: (eventId: string, shareId: string) => void;
 }) {
   return (
     <section className="mt-6">
@@ -4761,6 +4930,7 @@ function Agenda({
           {events.length} events
         </span>
       </div>
+
       <div className="space-y-3">
         {events.length === 0 ? (
           <EmptyState
@@ -4780,22 +4950,23 @@ function Agenda({
               onUndoCancel={() => onUndoCancel(event.id)}
               unboundTasks={unboundTasks}
               taskDraft={taskDrafts[event.id] ?? ""}
-              onTaskDraftChange={(value) =>
-                setTaskDrafts({ ...taskDrafts, [event.id]: value })
+              onTaskDraftChange={(value: string) =>
+                onTaskDraftChange(event.id, value)
               }
               onCreateTask={() => onCreateTask(event.id)}
-              onLinkTask={(taskId) => onLinkTask(event.id, taskId)}
+              onLinkTask={(taskId: string) => onLinkTask(event.id, taskId)}
               onToggleTask={onToggleTask}
-              onUnlinkTask={(taskId) => onUnlinkTask(event.id, taskId)}
+              onUnlinkTask={(taskId: string) => onUnlinkTask(event.id, taskId)}
               onDeleteTask={onDeleteTask}
-              calendar={calendars.find(
-                (calendar) => calendar.id === (event.calendarId ?? "personal"),
-              )}
               shareDraft={shareDrafts[event.id] ?? ""}
-              onShareDraftChange={(value) =>
-                setShareDrafts({ ...shareDrafts, [event.id]: value })
+              onShareDraftChange={(value: string) =>
+                onShareDraftChange(event.id, value)
               }
-              onShare={() => onShareEvent(event.id)}
+              onShare={() => onShare(event.id)}
+              canShare={canShareEvent(event)}
+              onUpdateShareRole={onUpdateEventShareRole}
+              onRemoveShare={onRemoveEventShare}
+              onRemoveSharedEvent={() => onRemoveSharedEvent(event.id)}
             />
           ))
         )}
@@ -4824,6 +4995,10 @@ function EventCard({
   shareDraft,
   onShareDraftChange,
   onShare,
+  canShare,
+onUpdateShareRole,
+onRemoveShare,
+onRemoveSharedEvent,
 }: {
   event: CalendarEvent;
   tag: CategoryStyle;
@@ -4844,9 +5019,20 @@ function EventCard({
   shareDraft: string;
   onShareDraftChange: (value: string) => void;
   onShare: () => void;
+  canShare: boolean;
+onUpdateShareRole: (
+  eventId: string,
+  shareId: string,
+  role: "editor" | "viewer",
+) => void;
+onRemoveShare: (eventId: string, shareId: string) => void;
+onRemoveSharedEvent: () => void;
 }) {
   const doneTasks = event.tasks.filter((task) => task.done).length;
   const cancelled = event.status === "cancelled";
+  const manageable = canManageEvent(event);
+  const shareable = canShare;
+  const sharedPreview = event as SharedPreviewCalendarEvent;
 
   return (
     <article
@@ -4888,45 +5074,71 @@ function EventCard({
                 {event.priority} priority
               </p>
               <p className="mt-1 text-xs font-bold text-[#8e8e93]">
-                Created by {event.createdBy ?? "you"} · Last edited by{" "}
-                {event.lastEditedBy ?? "you"}
+                Created by {event.createdByName ?? event.createdBy ?? "you"} · Last edited by{" "}
+                {event.updatedByName ?? event.lastEditedBy ?? "you"}
               </p>
               {cancelled && event.cancellationReason && (
                 <p className="mt-2 text-sm font-semibold text-[#8a5a55]">
                   Reason: {event.cancellationReason}
                 </p>
               )}
-            </div>
-            <div className="flex shrink-0 gap-1">
-              {cancelled ? (
-                <IconButton
-                  label={`Undo cancellation for ${event.title}`}
-                  onClick={onUndoCancel}
-                >
-                  <RotateCcw size={15} />
-                </IconButton>
-              ) : (
-                <>
-                  <IconButton label={`Edit ${event.title}`} onClick={onEdit}>
-                    <Edit3 size={15} />
-                  </IconButton>
-                  <IconButton
-                    label={`Cancel ${event.title}`}
-                    onClick={onCancel}
-                    danger
+              {sharedPreview.sharedPreviewRole ? (
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <span
+                    className={[
+                      "rounded-full px-2 py-1 text-[0.7rem] font-semibold",
+                      sharedPreview.sharedPreviewRole === "viewer"
+                        ? "bg-zinc-100 text-zinc-600"
+                        : "bg-emerald-100 text-emerald-700",
+                    ].join(" ")}
                   >
-                    <CircleX size={16} />
-                  </IconButton>
-                </>
-              )}
-              <IconButton
-                label={`Delete ${event.title}`}
-                onClick={onDelete}
-                danger
-              >
-                <Trash2 size={15} />
-              </IconButton>
+                    {sharedPreview.sharedPreviewRole === "viewer"
+                      ? "View only"
+                      : "Can edit"}
+                  </span>
+
+                  <button
+                    type="button"
+                    onClick={onRemoveSharedEvent}
+                    className="rounded-full border border-rose-200 px-3 py-1 text-[0.7rem] font-semibold text-rose-600 transition hover:bg-rose-50"
+                  >
+                    Remove from my calendar
+                  </button>
+                </div>
+              ) : null}
             </div>
+            {manageable && (
+              <div className="flex shrink-0 gap-1">
+                {cancelled ? (
+                  <IconButton
+                    label={`Undo cancellation for ${event.title}`}
+                    onClick={onUndoCancel}
+                  >
+                    <RotateCcw size={15} />
+                  </IconButton>
+                ) : (
+                  <>
+                    <IconButton label={`Edit ${event.title}`} onClick={onEdit}>
+                      <Edit3 size={15} />
+                    </IconButton>
+                    <IconButton
+                      label={`Cancel ${event.title}`}
+                      onClick={onCancel}
+                      danger
+                    >
+                      <CircleX size={16} />
+                    </IconButton>
+                  </>
+                )}
+                <IconButton
+                  label={`Delete ${event.title}`}
+                  onClick={onDelete}
+                  danger
+                >
+                  <Trash2 size={15} />
+                </IconButton>
+              </div>
+            )}
           </div>
           <div className="mt-3 flex flex-wrap gap-2 text-sm font-semibold text-[#636366]">
             <Chip
@@ -4995,109 +5207,161 @@ function EventCard({
                         </p>
                       )}
                     </div>
-                    <div className="flex gap-1">
-                      <IconButton
-                        label={`Edit ${task.title}`}
-                        onClick={() => onEditTask(task.id, task.title)}
-                      >
-                        <Edit3 size={14} />
-                      </IconButton>
-                      <IconButton
-                        label={`Unlink ${task.title}`}
-                        onClick={() => onUnlinkTask(task.id)}
-                      >
-                        <X size={14} />
-                      </IconButton>
-                      <IconButton
-                        label={`Delete ${task.title}`}
-                        onClick={() => onDeleteTask(task.id)}
-                        danger
-                      >
-                        <Trash2 size={14} />
-                      </IconButton>
-                    </div>
+                    {manageable && (
+                      <div className="flex gap-1">
+                        <IconButton
+                          label={`Edit ${task.title}`}
+                          onClick={() => onEditTask(task.id, task.title)}
+                        >
+                          <Edit3 size={14} />
+                        </IconButton>
+                        <IconButton
+                          label={`Unlink ${task.title}`}
+                          onClick={() => onUnlinkTask(task.id)}
+                        >
+                          <X size={14} />
+                        </IconButton>
+                        <IconButton
+                          label={`Delete ${task.title}`}
+                          onClick={() => onDeleteTask(task.id)}
+                          danger
+                        >
+                          <Trash2 size={14} />
+                        </IconButton>
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
             )}
-            <div className="mt-3 grid grid-cols-[1fr_auto] gap-2">
-              <input
-                value={taskDraft}
-                onChange={(inputEvent) =>
-                  onTaskDraftChange(inputEvent.target.value)
-                }
-                className="h-10 min-w-0 rounded-2xl bg-white/75 px-3 text-sm font-semibold outline-none placeholder:text-[#9b9baa]"
-                placeholder="New task for this event"
-              />
-              <button
-                type="button"
-                onClick={onCreateTask}
-                className="h-10 rounded-2xl bg-[#007aff] px-4 text-sm font-bold text-white transition active:scale-95"
-              >
-                Add
-              </button>
-            </div>
-            {unboundTasks.length > 0 && (
-              <select
-                value=""
-                onChange={(selectEvent) => {
-                  if (selectEvent.target.value) {
-                    onLinkTask(selectEvent.target.value);
+            {manageable && (
+              <>
+                <div className="mt-3 grid grid-cols-[1fr_auto] gap-2">
+                  <input
+                    value={taskDraft}
+                    onChange={(inputEvent) =>
+                      onTaskDraftChange(inputEvent.target.value)
+                    }
+                    className="h-10 min-w-0 rounded-2xl bg-white/75 px-3 text-sm font-semibold outline-none placeholder:text-[#9b9baa]"
+                    placeholder="New task for this event"
+                  />
+                  <button
+                    type="button"
+                    onClick={onCreateTask}
+                    className="h-10 rounded-2xl bg-[#007aff] px-4 text-sm font-bold text-white transition active:scale-95"
+                  >
+                    Add
+                  </button>
+                </div>
+                {unboundTasks.length > 0 && (
+                  <select
+                    value=""
+                    onChange={(selectEvent) => {
+                      if (selectEvent.target.value) {
+                        onLinkTask(selectEvent.target.value);
+                      }
+                    }}
+                    className="mt-2 h-10 w-full rounded-2xl bg-white/75 px-3 text-sm font-semibold outline-none"
+                    aria-label={`Link an existing task to ${event.title}`}
+                  >
+                    <option value="">Link existing task</option>
+                    {unboundTasks.map((task) => (
+                      <option key={task.id} value={task.id}>
+                        {task.title}
+                      </option>
+                    ))}
+                  </select>
+                )}
+              </>
+            )}
+          </div>
+          {shareable && (
+            <div className="mt-3 rounded-3xl bg-white/55 p-3 backdrop-blur">
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <p className="text-sm font-bold text-[#636366]">
+                  Specific event sharing
+                </p>
+                <span className="rounded-full bg-[#f2f2f7] px-2 py-0.5 text-[11px] font-bold text-[#8e8e93]">
+                  Invite only
+                </span>
+              </div>
+              <div className="grid grid-cols-[1fr_auto] gap-2">
+                <input
+                  value={shareDraft}
+                  onChange={(inputEvent) =>
+                    onShareDraftChange(inputEvent.target.value)
                   }
-                }}
-                className="mt-2 h-10 w-full rounded-2xl bg-white/75 px-3 text-sm font-semibold outline-none"
-                aria-label={`Link an existing task to ${event.title}`}
-              >
-                <option value="">Link existing task</option>
-                {unboundTasks.map((task) => (
-                  <option key={task.id} value={task.id}>
-                    {task.title}
-                  </option>
-                ))}
-              </select>
-            )}
-          </div>
-          <div className="mt-3 rounded-3xl bg-white/55 p-3 backdrop-blur">
-            <div className="mb-2 flex items-center justify-between gap-2">
-              <p className="text-sm font-bold text-[#636366]">
-                Specific event sharing
-              </p>
-              <span className="rounded-full bg-[#f2f2f7] px-2 py-0.5 text-[11px] font-bold text-[#8e8e93]">
-                Safe placeholder
-              </span>
+                  className="h-10 min-w-0 rounded-2xl bg-white/75 px-3 text-sm font-semibold outline-none placeholder:text-[#9b9baa]"
+                  placeholder="person@example.com"
+                />
+                <button
+                  type="button"
+                  onClick={onShare}
+                  className="grid h-10 place-items-center rounded-2xl bg-[#af52de] px-4 text-sm font-bold text-white transition active:scale-95"
+                  aria-label={`Prepare share invite for ${event.title}`}
+                >
+                  <Share2 size={15} />
+                </button>
+              </div>
+              {(event.sharedWith ?? []).length > 0 && (
+                <div className="mt-3 space-y-2">
+                  {(event.sharedWith ?? []).map((share) => (
+                    <div
+                      key={share.id}
+                      className="grid gap-2 rounded-2xl bg-white/65 p-2 sm:grid-cols-[1fr_auto_auto]"
+                    >
+                      <div className="min-w-0">
+                        <p className="truncate text-xs font-black text-[#1d1d1f]">
+                          {share.email}
+                        </p>
+                        <p
+                          className={[
+                            "mt-1 text-[11px] font-black uppercase tracking-[0.08em]",
+                            share.status === "accepted"
+                              ? "text-[#1f8f45]"
+                              : share.status === "declined"
+                                ? "text-[#ff3b30]"
+                                : "text-[#8e8e93]",
+                          ].join(" ")}
+                        >
+                          {share.status}
+                        </p>
+                      </div>
+
+                      <select
+                        value={share.role}
+                        onChange={(selectEvent) =>
+                          onUpdateShareRole(
+                            event.id,
+                            share.id,
+                            selectEvent.target.value as "editor" | "viewer",
+                          )
+                        }
+                        className="h-9 rounded-2xl bg-white px-3 text-xs font-black text-[#636366] outline-none"
+                        aria-label={`Change ${share.email} role`}
+                      >
+                        <option value="viewer">Viewer</option>
+                        <option value="editor">Editor</option>
+                      </select>
+
+                      <button
+                        type="button"
+                        onClick={() => onRemoveShare(event.id, share.id)}
+                        className="h-9 rounded-2xl bg-[#ffe8e6] px-3 text-xs font-black text-[#ff3b30] transition active:scale-95"
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {(event.activity ?? []).length > 0 && (
+                <p className="mt-2 text-xs font-bold text-[#8e8e93]">
+                  Latest activity: {event.activity?.at(-1)?.text}
+                </p>
+              )}
             </div>
-            <div className="grid grid-cols-[1fr_auto] gap-2">
-              <input
-                value={shareDraft}
-                onChange={(inputEvent) =>
-                  onShareDraftChange(inputEvent.target.value)
-                }
-                className="h-10 min-w-0 rounded-2xl bg-white/75 px-3 text-sm font-semibold outline-none placeholder:text-[#9b9baa]"
-                placeholder="person@example.com"
-              />
-              <button
-                type="button"
-                onClick={onShare}
-                className="grid h-10 place-items-center rounded-2xl bg-[#af52de] px-4 text-sm font-bold text-white transition active:scale-95"
-                aria-label={`Prepare share invite for ${event.title}`}
-              >
-                <Share2 size={15} />
-              </button>
-            </div>
-            {(event.sharedWith ?? []).map((share) => (
-              <p
-                key={share.id}
-                className="mt-2 truncate text-xs font-bold text-[#7c7c8a]"
-              >
-                {share.email} · {share.role} · {share.status}
-              </p>
-            ))}
-            {(event.activity ?? []).length > 0 && (
-              <p className="mt-2 text-xs font-bold text-[#8e8e93]">
-                Latest activity: {event.activity?.at(-1)?.text}
-              </p>
-            )}
-          </div>
+          )}
         </div>
       </div>
     </article>
@@ -5261,6 +5525,8 @@ function AlertsTab({
   eventInviteCalendarTargets,
   setEventInviteCalendarTargets,
   nonSharedCalendars,
+  openShareInfo,
+  setOpenShareInfo,
 }: {
   alerts: RescheduleReminder[];
   calendarInvitations: CalendarInvitation[];
@@ -5270,6 +5536,8 @@ function AlertsTab({
     React.SetStateAction<Record<string, string>>
   >;
   nonSharedCalendars: AppCalendar[];
+  openShareInfo: Record<string, boolean>;
+  setOpenShareInfo: React.Dispatch<React.SetStateAction<Record<string, boolean>>>;
   onCalendarInvitationResponse: (
     invitationId: string,
     action: "accept" | "decline",
@@ -5335,6 +5603,8 @@ function AlertsTab({
                     [invitation.id]: calendarId,
                   }))
                 }
+                openShareInfo={openShareInfo}
+                setOpenShareInfo={setOpenShareInfo}
                 onResponse={onEventInvitationResponse}
               />
             ))
@@ -5439,12 +5709,16 @@ function EventInviteCard({
   nonSharedCalendars,
   selectedCalendarId,
   onCalendarChange,
+  openShareInfo,
+  setOpenShareInfo,
   onResponse,
 }: {
   invitation: EventInvitation;
   nonSharedCalendars: AppCalendar[];
   selectedCalendarId: string;
   onCalendarChange: (calendarId: string) => void;
+  openShareInfo: Record<string, boolean>;
+  setOpenShareInfo: React.Dispatch<React.SetStateAction<Record<string, boolean>>>;
   onResponse: (invitationId: string, action: "accept" | "decline") => void;
 }) {
   const preview = mapEvent(invitation.event);
@@ -5501,10 +5775,26 @@ function EventInviteCard({
             </div>
           )}
 
-          <p className="mt-3 text-xs font-bold text-[#8e8e93]">
-            Accepting shows this event in your calendar as a shared preview. It
-            does not add the owner’s full calendar.
-          </p>
+          <div className="mt-2">
+            <button
+              type="button"
+              onClick={() =>
+                setOpenShareInfo((current) => ({
+                  ...current,
+                  [invitation.id]: !current[invitation.id],
+                }))
+              }
+              className="rounded-full bg-sky-100 px-2 py-1 text-xs font-semibold text-sky-700 transition hover:bg-sky-200"
+            >
+              {openShareInfo[invitation.id] ? "Hide info" : "Info"}
+            </button>
+
+            {openShareInfo[invitation.id] ? (
+              <p className="mt-2 rounded-2xl bg-sky-50 px-3 py-2 text-xs font-semibold text-sky-700">
+                Accepting adds this single event only. It does not add the owner&apos;s full calendar.
+              </p>
+            ) : null}
+          </div>
         </div>
       </div>
       <div className="mt-4 rounded-2xl bg-white/65 p-3">

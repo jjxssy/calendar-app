@@ -83,7 +83,6 @@ model Calendar {
   shared      Boolean  @default(false)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
-
   owner       User     @relation("CalendarOwner", fields: [ownerId], references: [id], onDelete: Cascade)
   members     CalendarMember[]
   events      Event[]
