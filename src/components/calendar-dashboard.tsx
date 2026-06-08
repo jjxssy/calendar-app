@@ -1082,11 +1082,12 @@ export default function CalendarDashboard() {
         const eventTaskText = event.tasks.map((task) => task.title).join(" ");
         const matchesCategory =
           activeCategory === "all" || event.category === activeCategory;
-        const matchesCalendar =
-          !event.calendarId ||
-          !hasVisibleCalendars ||
-          visibleCalendarIds.has(event.calendarId) ||
-          !calendars.some((calendar) => calendar.id === event.calendarId);
+        const eventHasKnownCalendar =
+  Boolean(event.calendarId) &&
+  calendars.some((calendar) => calendar.id === event.calendarId);
+
+const matchesCalendar =
+  event.calendarId ? visibleCalendarIds.has(event.calendarId) : false;
         const matchesQuery =
           !normalizedWorkspaceQuery ||
           [event.title, event.location, event.notes, tag?.label, eventTaskText]
@@ -1173,10 +1174,19 @@ export default function CalendarDashboard() {
       monthDays.filter((day) => day.currentMonth).map((day) => day.key),
     );
   }, [monthDays, selectedKey, taskView, weekDays]);
-  const visibleTaskItems = useMemo(
-    () => taskItems.filter((task) => taskViewKeys.has(task.date)),
-    [taskItems, taskViewKeys],
-  );
+const visibleTaskItems = useMemo(() => {
+  return taskItems.filter((task) => {
+    if (!taskViewKeys.has(task.date)) return false;
+
+    if (!task.eventId) return true;
+
+    const linkedEvent = events.find((event) => event.id === task.eventId);
+
+    if (!linkedEvent?.calendarId) return true;
+
+    return visibleCalendarIds.has(linkedEvent.calendarId);
+  });
+}, [events, taskItems, taskViewKeys, visibleCalendarIds]);
   const taskViewTitle = useMemo(() => {
     if (taskView === "day") {
       return selectedDate.toLocaleDateString("en-US", {
@@ -2210,6 +2220,16 @@ export default function CalendarDashboard() {
     setVisibleMonth(startOfMonth(date));
     setActiveTab("calendar");
   }
+
+  function toggleCalendar(calendarId: string) {
+  setCalendars((current) =>
+    current.map((calendar) =>
+      calendar.id === calendarId
+        ? { ...calendar, visible: !calendar.visible }
+        : calendar,
+    ),
+  );
+}
 
   function openNewEvent() {
     if (composerSubmitting) return;
@@ -3821,9 +3841,10 @@ export default function CalendarDashboard() {
                   onAddTag={() => setTagModalOpen(true)}
                 />
                 <CalendarStrip
-                  calendars={calendars}
-                  onToggle={toggleCalendarVisibility}
-                />
+  calendars={calendars}
+  onToggle={toggleCalendar}
+  isPremium={isPremium}
+/>
                 {view === "month" && (
                   <MonthView
                     days={monthDays}
@@ -4917,17 +4938,21 @@ function EventCard({
 function CalendarStrip({
   calendars,
   onToggle,
+  isPremium,
 }: {
   calendars: AppCalendar[];
   onToggle: (calendarId: string) => void;
+  isPremium: boolean;
 }) {
   return (
     <section className="mb-4 rounded-[24px] border border-white/60 bg-white/58 p-3 shadow-lg shadow-black/5 backdrop-blur-2xl">
       <div className="mb-2 flex items-center justify-between">
         <p className="text-sm font-bold text-[#8e8e93]">Calendars</p>
-        <span className="rounded-full bg-white/70 px-2.5 py-1 text-xs font-bold text-[#007aff]">
-          {calendars.length}/3 free
-        </span>
+        {!isPremium && (
+  <span className="rounded-full bg-white/70 px-2.5 py-1 text-xs font-bold text-[#007aff]">
+    {calendars.length}/3 free
+  </span>
+)}
       </div>
       <div className="flex gap-2 overflow-x-auto pb-1">
         {calendars.map((calendar) => (
@@ -6020,13 +6045,26 @@ function CalendarManagementRow({
 
       {calendar.members.length > 0 && (
         <div className="mt-3 space-y-2">
-          {calendar.members.map((member) => (
+          {calendar.members
+  .filter((member) => member.role !== "owner")
+  .map((member) => (
             <div
               key={member.id}
-              className="grid gap-2 rounded-2xl bg-[#f2f2f7] p-2 text-xs font-bold text-[#8e8e93] sm:grid-cols-[1fr_auto_auto] sm:items-center"
+              className="grid gap-2 rounded-2xl bg-[#f2f2f7] px-3 py-2 text-[11px] font-bold text-[#8e8e93] sm:grid-cols-[1fr_auto_auto] sm:items-center"
             >
-              <span className="min-w-0 truncate">
-  {member.displayName || member.email} · {member.status}
+              <span className="flex min-w-0 flex-wrap items-center gap-2">
+  <span className="min-w-0 truncate">
+    {member.displayName || member.email}
+  </span>
+
+  <span
+    className={[
+      "rounded-full px-2 py-0.5 text-[10px] font-black uppercase tracking-[0.08em] ring-1",
+      memberStatusClasses(member.status),
+    ].join(" ")}
+  >
+    {memberStatusLabel(member.status)}
+  </span>
 </span>
               {canEdit && member.role !== "owner" ? (
                 <>
