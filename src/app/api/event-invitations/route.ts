@@ -148,7 +148,7 @@ export async function POST(request: Request) {
             share.event.description?.trim()
               ? `${share.event.description.trim()}\n\n`
               : ""
-          }Shared event preview\n[[arcgenda-shared-event:${share.role}:${share.event.userId}]]`,
+          }Shared event preview\n[[arcgenda-shared-event:${share.role}:${share.id}]]`,
           startDate: share.event.startDate,
           endDate: share.event.endDate,
           allDay: share.event.allDay,
