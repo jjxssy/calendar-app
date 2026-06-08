@@ -12,10 +12,19 @@ export async function GET() {
       },
       include: {
         event: {
-          include: {
-            calendar: { include: { members: true } },
-            category: true,
-            tasks: true,
+  include: {
+    calendar: { include: { members: true } },
+    category: true,
+    user: { select: { id: true, email: true, name: true } },
+    tasks: {
+              include: {
+                reminders: true,
+                event: {
+                  select: { id: true, title: true, status: true, startDate: true },
+                },
+              },
+              orderBy: { createdAt: "asc" },
+            },
             reminders: true,
             shares: true,
           },
@@ -37,6 +46,7 @@ export async function POST(request: Request) {
 
     const shareId = stringValue(body.shareId);
     const action = stringValue(body.action);
+    const targetCalendarId = stringValue(body.targetCalendarId);
 
     if (!shareId) throw new ApiError("shareId is required.");
     if (action !== "accept" && action !== "decline") {
@@ -50,7 +60,12 @@ export async function POST(request: Request) {
         OR: [{ userId: user.id }, { email: user.email }],
       },
       include: {
-        event: true,
+        event: {
+          include: {
+            tasks: true,
+            reminders: true,
+          },
+        },
       },
     });
 
@@ -58,26 +73,116 @@ export async function POST(request: Request) {
       throw new ApiError("Event invitation not found.", 404);
     }
 
-    const updated = await prisma.eventShare.update({
-      where: { id: share.id },
-      data: {
-        userId: user.id,
-        email: user.email,
-        status: action === "accept" ? "accepted" : "declined",
+    if (action === "decline") {
+      const updatedShare = await prisma.eventShare.update({
+        where: { id: share.id },
+        data: {
+          userId: user.id,
+          email: user.email,
+          status: "declined",
+        },
+      });
+
+      await prisma.activityHistory.create({
+        data: {
+          eventId: share.eventId,
+          userId: user.id,
+          action: "event.share_declined",
+          details: `${user.email} declined "${share.event.title}"`,
+        },
+      });
+
+      return ok({ share: updatedShare });
+    }
+
+    if (!targetCalendarId) {
+      throw new ApiError("Choose a calendar to add this event to.");
+    }
+
+    const targetCalendar = await prisma.calendar.findFirst({
+      where: {
+        id: targetCalendarId,
+        ownerId: user.id,
+        shared: false,
       },
     });
 
-    await prisma.activityHistory.create({
-      data: {
-        eventId: share.eventId,
-        calendarId: share.event.calendarId,
-        userId: user.id,
-        action: action === "accept" ? "event.share_accepted" : "event.share_declined",
-        details: `${user.email} ${action === "accept" ? "accepted" : "declined"} "${share.event.title}"`,
-      },
+    if (!targetCalendar) {
+      throw new ApiError("Choose one of your personal non-shared calendars.", 403);
+    }
+
+    const copiedEvent = await prisma.$transaction(async (tx) => {
+      const updatedShare = await tx.eventShare.update({
+        where: { id: share.id },
+        data: {
+          userId: user.id,
+          email: user.email,
+          status: "accepted",
+        },
+      });
+
+      const createdEvent = await tx.event.create({
+        data: {
+          userId: user.id,
+          calendarId: targetCalendar.id,
+          categoryId: null,
+          createdById: user.id,
+          updatedById: user.id,
+          title: share.event.title,
+          description: share.event.description
+            ? `${share.event.description}\n\nShared event preview`
+            : "Shared event preview",
+          startDate: share.event.startDate,
+          endDate: share.event.endDate,
+          allDay: share.event.allDay,
+          color: share.event.color,
+          location: share.event.location,
+          priority: share.event.priority,
+          recurrence: "none",
+          pinned: false,
+          status: "scheduled",
+          tasks: {
+            create: share.event.tasks.map((task) => ({
+              userId: user.id,
+              title: task.title,
+              description: task.description,
+              completed: false,
+              dueDate: task.dueDate,
+              priority: task.priority,
+            })),
+          },
+        },
+        include: {
+          calendar: { include: { members: true } },
+          category: true,
+          user: { select: { id: true, email: true, name: true } },
+          tasks: {
+            include: {
+              reminders: true,
+              event: {
+                select: { id: true, title: true, status: true, startDate: true },
+              },
+            },
+            orderBy: { createdAt: "asc" },
+          },
+          reminders: true,
+          shares: true,
+        },
+      });
+
+      await tx.activityHistory.create({
+        data: {
+          eventId: createdEvent.id,
+          userId: user.id,
+          action: "event.share_accepted",
+          details: `${user.email} added "${share.event.title}" to ${targetCalendar.name}`,
+        },
+      });
+
+      return { event: createdEvent, share: updatedShare };
     });
 
-    return ok({ share: updated });
+    return ok(copiedEvent);
   } catch (error) {
     return fail(error);
   }

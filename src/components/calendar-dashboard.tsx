@@ -166,6 +166,8 @@ type NotificationCapabilities = {
 type DbMember = {
   id: string;
   email: string;
+  createdBy?: { id: string; name?: string | null; email: string } | null;
+  updatedBy?: { id: string; name?: string | null; email: string } | null;
   user?: { id: string; name?: string | null; email: string } | null;
   displayName?: string | null;
   role: "owner" | "editor" | "viewer";
@@ -191,6 +193,14 @@ type CalendarInvitation = {
   calendar: DbCalendar & {
     owner?: { id: string; email: string; name?: string | null } | null;
   };
+};
+
+type EventInvitation = {
+  id: string;
+  email: string;
+  role: "editor" | "viewer";
+  status: "pending";
+  event: DbEvent;
 };
 
 type DbCategory = {
@@ -257,7 +267,7 @@ type DbEvent = {
     id: string;
     email: string;
     role: "editor" | "viewer";
-    status: "pending" | "accepted";
+    status: "pending" | "accepted" | "declined";
   }>;
 };
 
@@ -600,6 +610,7 @@ function mapEvent(event: DbEvent): CalendarEvent {
       role: share.role,
       status: share.status,
     })),
+
     activity: [],
     rescheduleReminders: event.reminders.map(mapReminder),
     tasks: event.tasks.map((task) => ({
@@ -902,7 +913,15 @@ export default function CalendarDashboard() {
   const [eventReminders, setEventReminders] = useState<RescheduleReminder[]>(
     [],
   );
-  const [calendarInvitations, setCalendarInvitations] = useState<CalendarInvitation[]>([]);
+  const [calendarInvitations, setCalendarInvitations] = useState<
+    CalendarInvitation[]
+  >([]);
+  const [eventInvitations, setEventInvitations] = useState<EventInvitation[]>(
+    [],
+  );
+  const [eventInviteCalendarTargets, setEventInviteCalendarTargets] = useState<
+    Record<string, string>
+  >({});
   const [alertsSeen, setAlertsSeen] = useState(true);
   const [standaloneTasks, setStandaloneTasks] = useState<StandaloneTask[]>([]);
   const [activeCategory, setActiveCategory] = useState<string | "all">("all");
@@ -969,6 +988,7 @@ export default function CalendarDashboard() {
   const [isMobileDevice, setIsMobileDevice] = useState(false);
   const [canVibrate, setCanVibrate] = useState(false);
   const toastRemovalTimers = useRef<Record<string, number>>({});
+  const notifiedEventInvitationIdsRef = useRef<Set<string>>(new Set());
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const [notificationCapabilities, setNotificationCapabilities] =
     useState<NotificationCapabilities>(() => ({
@@ -1000,6 +1020,14 @@ export default function CalendarDashboard() {
       ),
     [calendars],
   );
+  const nonSharedCalendars = useMemo(
+  () =>
+    calendars.filter(
+      (calendar) => calendar.role === "owner" && !calendar.shared,
+    ),
+  [calendars],
+);
+
   const hasVisibleCalendars = visibleCalendarIds.size > 0;
 
   const normalizedWorkspaceQuery = query.trim().toLowerCase();
@@ -1083,11 +1111,12 @@ export default function CalendarDashboard() {
         const matchesCategory =
           activeCategory === "all" || event.category === activeCategory;
         const eventHasKnownCalendar =
-  Boolean(event.calendarId) &&
-  calendars.some((calendar) => calendar.id === event.calendarId);
+          Boolean(event.calendarId) &&
+          calendars.some((calendar) => calendar.id === event.calendarId);
 
-const matchesCalendar =
-  event.calendarId ? visibleCalendarIds.has(event.calendarId) : false;
+        const matchesCalendar = event.calendarId
+          ? visibleCalendarIds.has(event.calendarId)
+          : false;
         const matchesQuery =
           !normalizedWorkspaceQuery ||
           [event.title, event.location, event.notes, tag?.label, eventTaskText]
@@ -1122,19 +1151,12 @@ const matchesCalendar =
     () =>
       filteredEvents.filter(
         (event) =>
-          event.date === selectedKey || selectedLinkedTaskEventIds.has(event.id),
+          event.date === selectedKey ||
+          selectedLinkedTaskEventIds.has(event.id),
       ),
     [filteredEvents, selectedKey, selectedLinkedTaskEventIds],
   );
-  
-  const selectedReminders = useMemo(
-    () =>
-      events
-        .flatMap((event) => event.rescheduleReminders)
-        .filter((reminder) => reminder.date === selectedKey && !reminder.done)
-        .sort((a, b) => a.time.localeCompare(b.time)),
-    [events, selectedKey],
-  );
+
   const weekDays = useMemo(() => getWeekDays(selectedDate), [selectedDate]);
   const taskItems = useMemo((): TaskListItem[] => {
     const byId = new Map<string, TaskListItem>();
@@ -1174,19 +1196,19 @@ const matchesCalendar =
       monthDays.filter((day) => day.currentMonth).map((day) => day.key),
     );
   }, [monthDays, selectedKey, taskView, weekDays]);
-const visibleTaskItems = useMemo(() => {
-  return taskItems.filter((task) => {
-    if (!taskViewKeys.has(task.date)) return false;
+  const visibleTaskItems = useMemo(() => {
+    return taskItems.filter((task) => {
+      if (!taskViewKeys.has(task.date)) return false;
 
-    if (!task.eventId) return true;
+      if (!task.eventId) return true;
 
-    const linkedEvent = events.find((event) => event.id === task.eventId);
+      const linkedEvent = events.find((event) => event.id === task.eventId);
 
-    if (!linkedEvent?.calendarId) return true;
+      if (!linkedEvent?.calendarId) return true;
 
-    return visibleCalendarIds.has(linkedEvent.calendarId);
-  });
-}, [events, taskItems, taskViewKeys, visibleCalendarIds]);
+      return visibleCalendarIds.has(linkedEvent.calendarId);
+    });
+  }, [events, taskItems, taskViewKeys, visibleCalendarIds]);
   const taskViewTitle = useMemo(() => {
     if (taskView === "day") {
       return selectedDate.toLocaleDateString("en-US", {
@@ -1329,7 +1351,9 @@ const visibleTaskItems = useMemo(() => {
   }, [alertItems, normalizedWorkspaceQuery]);
 
   const hasNewAlerts =
-    calendarInvitations.length > 0 && activeTab !== "alerts" && !alertsSeen;
+    (calendarInvitations.length > 0 || eventInvitations.length > 0) &&
+    activeTab !== "alerts" &&
+    !alertsSeen;
 
   const unboundUndoneTasks = useMemo(
     () => standaloneTasks.filter((task) => !task.done && !task.eventId),
@@ -1418,35 +1442,72 @@ const visibleTaskItems = useMemo(() => {
   }, [activeTab]);
 
   useEffect(() => {
-    if (calendarInvitations.length === 0) return;
+  if (activeTab === "alerts") {
+    setAlertsSeen(true);
+  }
+}, [activeTab]);
 
-    const newInvitations = calendarInvitations.filter(
-      (invitation) => !notifiedInvitationIdsRef.current.has(invitation.id),
-    );
+useEffect(() => {
+  if (calendarInvitations.length === 0) return;
 
-    if (newInvitations.length === 0) return;
+  const newInvitations = calendarInvitations.filter(
+    (invitation) => !notifiedInvitationIdsRef.current.has(invitation.id),
+  );
 
-    newInvitations.forEach((invitation) => {
-      notifiedInvitationIdsRef.current.add(invitation.id);
-    });
+  if (newInvitations.length === 0) return;
 
-    if (activeTab !== "alerts") {
-      setAlertsSeen(false);
-    }
+  newInvitations.forEach((invitation) => {
+    notifiedInvitationIdsRef.current.add(invitation.id);
+  });
 
-    const firstInvite = newInvitations[0];
-    const message =
-      newInvitations.length === 1
-        ? `New shared calendar invite: ${firstInvite.calendar.name}`
-        : `${newInvitations.length} new shared calendar invites`;
+  if (activeTab !== "alerts") {
+    setAlertsSeen(false);
+  }
 
-    pushToast(message, "info");
+  const firstInvite = newInvitations[0];
+  const message =
+    newInvitations.length === 1
+      ? `New shared calendar invite: ${firstInvite.calendar.name}`
+      : `${newInvitations.length} new shared calendar invites`;
 
-    void showArcgendaNotification(
-      message,
-      settings.notifications.vibration,
-    );
-  }, [activeTab, calendarInvitations, settings.notifications.vibration]);
+  pushToast(message, "info");
+
+  void showArcgendaNotification(
+    message,
+    settings.notifications.vibration,
+  );
+}, [activeTab, calendarInvitations, settings.notifications.vibration]);
+
+useEffect(() => {
+  if (eventInvitations.length === 0) return;
+
+  const newInvitations = eventInvitations.filter(
+    (invitation) => !notifiedEventInvitationIdsRef.current.has(invitation.id),
+  );
+
+  if (newInvitations.length === 0) return;
+
+  newInvitations.forEach((invitation) => {
+    notifiedEventInvitationIdsRef.current.add(invitation.id);
+  });
+
+  if (activeTab !== "alerts") {
+    setAlertsSeen(false);
+  }
+
+  const firstInvite = newInvitations[0];
+  const message =
+    newInvitations.length === 1
+      ? `New event invite: ${firstInvite.event.title}`
+      : `${newInvitations.length} new event invites`;
+
+  pushToast(message, "info");
+
+  void showArcgendaNotification(
+    message,
+    settings.notifications.vibration,
+  );
+}, [activeTab, eventInvitations, settings.notifications.vibration]);
 
   function markBusy(action: string, busy: boolean) {
     setBusyActions((current) => {
@@ -1593,6 +1654,7 @@ const visibleTaskItems = useMemo(() => {
         taskPayload,
         reminderPayload,
         invitationPayload,
+        eventInvitationPayload,
         preferencePayload,
       ] = await Promise.all([
         apiJson<{
@@ -1609,7 +1671,10 @@ const visibleTaskItems = useMemo(() => {
         apiJson<{ events: DbEvent[] }>("/api/events"),
         apiJson<{ tasks: DbTask[] }>("/api/tasks"),
         apiJson<{ reminders: DbReminder[] }>("/api/reminders"),
-        apiJson<{ invitations: CalendarInvitation[] }>("/api/calendar-invitations"),
+        apiJson<{ invitations: CalendarInvitation[] }>(
+          "/api/calendar-invitations",
+        ),
+        apiJson<{ invitations: EventInvitation[] }>("/api/event-invitations"),
         apiJson<{ preferences: DbNotificationPreferences }>(
           "/api/settings/notifications",
         ),
@@ -1732,6 +1797,7 @@ const visibleTaskItems = useMemo(() => {
           .map(mapReminder),
       );
       setCalendarInvitations(invitationPayload.invitations);
+      setEventInvitations(eventInvitationPayload.invitations);
       setStandaloneTasks(
         taskPayload.tasks.map((task) => mapStandaloneTask(task, today)),
       );
@@ -2222,14 +2288,14 @@ const visibleTaskItems = useMemo(() => {
   }
 
   function toggleCalendar(calendarId: string) {
-  setCalendars((current) =>
-    current.map((calendar) =>
-      calendar.id === calendarId
-        ? { ...calendar, visible: !calendar.visible }
-        : calendar,
-    ),
-  );
-}
+    setCalendars((current) =>
+      current.map((calendar) =>
+        calendar.id === calendarId
+          ? { ...calendar, visible: !calendar.visible }
+          : calendar,
+      ),
+    );
+  }
 
   function openNewEvent() {
     if (composerSubmitting) return;
@@ -2866,7 +2932,7 @@ const visibleTaskItems = useMemo(() => {
     }
   }
 
-    async function editTaskTitle(taskId: string, currentTitle: string) {
+  async function editTaskTitle(taskId: string, currentTitle: string) {
     const nextTitle = window.prompt("Edit task title", currentTitle)?.trim();
 
     if (!nextTitle || nextTitle === currentTitle) return;
@@ -3131,7 +3197,7 @@ const visibleTaskItems = useMemo(() => {
     );
   }
 
-   async function addCalendarMember(event: FormEvent<HTMLFormElement>) {
+  async function addCalendarMember(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
     const action = "calendar:add-member";
@@ -3449,7 +3515,9 @@ const visibleTaskItems = useMemo(() => {
 
       if (action === "accept" && invitation) {
         setCalendars((current) => [
-          ...current.filter((calendar) => calendar.id !== invitation.calendar.id),
+          ...current.filter(
+            (calendar) => calendar.id !== invitation.calendar.id,
+          ),
           mapCalendar(
             {
               ...invitation.calendar,
@@ -3477,6 +3545,71 @@ const visibleTaskItems = useMemo(() => {
         error instanceof Error
           ? error.message
           : "Could not update shared calendar invitation.",
+      );
+    } finally {
+      markBusy(busyKey, false);
+    }
+  }
+
+  async function respondToEventInvitation(
+    invitationId: string,
+    action: "accept" | "decline",
+  ) {
+    const busyKey = `event-invitation:${invitationId}:${action}`;
+    if (isBusy(busyKey)) return;
+
+    const invitation = eventInvitations.find(
+      (item) => item.id === invitationId,
+    );
+    const targetCalendarId =
+      eventInviteCalendarTargets[invitationId] ??
+      nonSharedCalendars[0]?.id ??
+      "";
+
+    if (action === "accept" && !targetCalendarId) {
+      setWorkspaceMessage("Choose one of your personal calendars first.");
+      return;
+    }
+
+    markBusy(busyKey, true);
+
+    try {
+      const payload = await apiJson<{ event?: DbEvent }>(
+        "/api/event-invitations",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            shareId: invitationId,
+            action,
+            targetCalendarId:
+              action === "accept" ? targetCalendarId : undefined,
+          }),
+        },
+      );
+
+      setEventInvitations((current) =>
+        current.filter((item) => item.id !== invitationId),
+      );
+
+      if (action === "accept" && payload.event) {
+        const previewEvent = mapEvent(payload.event);
+
+        setEvents((current) => [
+          ...current.filter((event) => event.id !== previewEvent.id),
+          previewEvent,
+        ]);
+
+        setWorkspaceMessage("Shared event added to your calendar.");
+      } else if (action === "accept" && invitation) {
+        setWorkspaceMessage("Shared event accepted.");
+      } else {
+        setWorkspaceMessage("Shared event declined.");
+      }
+    } catch (error) {
+      setWorkspaceMessage(
+        error instanceof Error
+          ? error.message
+          : "Could not update event invitation.",
       );
     } finally {
       markBusy(busyKey, false);
@@ -3569,7 +3702,8 @@ const visibleTaskItems = useMemo(() => {
       applyDocumentTheme(nextSettings.theme, true);
 
       const changedSections = [
-        JSON.stringify(settings.profile) !== JSON.stringify(savedSettings.profile) ||
+        JSON.stringify(settings.profile) !==
+          JSON.stringify(savedSettings.profile) ||
         settings.skipIntro !== savedSettings.skipIntro
           ? "Profile"
           : null,
@@ -3643,32 +3777,69 @@ const visibleTaskItems = useMemo(() => {
     }
   }
 
-  function shareEvent(eventId: string) {
+  async function shareEvent(eventId: string) {
     const email = shareDrafts[eventId]?.trim().toLowerCase();
     if (!email) return;
 
-    setEvents((current) =>
-      current.map((event) =>
-        event.id === eventId
-          ? {
-              ...event,
-              sharedWith: [
-                ...(event.sharedWith ?? []),
-                { id: createId(), email, role: "viewer", status: "pending" },
-              ],
-              activity: [
-                ...(event.activity ?? []),
-                {
-                  id: createId(),
-                  text: `Share prepared for ${email}`,
-                  at: new Date().toISOString(),
-                },
-              ],
-            }
-          : event,
-      ),
-    );
-    setShareDrafts((current) => ({ ...current, [eventId]: "" }));
+    const action = `event:${eventId}:share`;
+    if (isBusy(action)) return;
+
+    markBusy(action, true);
+
+    try {
+      const payload = await apiJson<{
+        share: {
+          id: string;
+          email: string;
+          role: "editor" | "viewer";
+          status: "pending" | "accepted" | "declined" | "revoked";
+        };
+      }>(`/api/events/${eventId}/shares`, {
+        method: "POST",
+        body: JSON.stringify({ email, role: "viewer" }),
+      });
+
+      setEvents((current) =>
+        current.map((event) =>
+          event.id === eventId
+            ? {
+                ...event,
+                sharedWith: [
+                  ...(event.sharedWith ?? []).filter(
+                    (share) => share.id !== payload.share.id,
+                  ),
+                  {
+                    id: payload.share.id,
+                    email: payload.share.email,
+                    role: payload.share.role,
+                    status:
+                      payload.share.status === "revoked"
+                        ? "declined"
+                        : payload.share.status,
+                  },
+                ],
+                activity: [
+                  ...(event.activity ?? []),
+                  {
+                    id: createId(),
+                    text: `Share invite sent to ${email}`,
+                    at: new Date().toISOString(),
+                  },
+                ],
+              }
+            : event,
+        ),
+      );
+
+      setShareDrafts((current) => ({ ...current, [eventId]: "" }));
+      setWorkspaceMessage("Event invite sent.");
+    } catch (error) {
+      setWorkspaceMessage(
+        error instanceof Error ? error.message : "Could not share event.",
+      );
+    } finally {
+      markBusy(action, false);
+    }
   }
 
   function updateNotificationSetting(
@@ -3841,10 +4012,10 @@ const visibleTaskItems = useMemo(() => {
                   onAddTag={() => setTagModalOpen(true)}
                 />
                 <CalendarStrip
-  calendars={calendars}
-  onToggle={toggleCalendar}
-  isPremium={isPremium}
-/>
+                  calendars={calendars}
+                  onToggle={toggleCalendar}
+                  isPremium={isPremium}
+                />
                 {view === "month" && (
                   <MonthView
                     days={monthDays}
@@ -3875,7 +4046,6 @@ const visibleTaskItems = useMemo(() => {
                 <Agenda
                   selectedDate={selectedDate}
                   events={selectedEvents}
-                  reminders={selectedReminders}
                   tagFor={tagFor}
                   onEdit={openEditEvent}
                   onCancel={(event) => {
@@ -3902,7 +4072,7 @@ const visibleTaskItems = useMemo(() => {
               </>
             )}
             {activeTab === "tasks" && (
-                            <TasksTab
+              <TasksTab
                 tasks={searchedVisibleTaskItems}
                 taskView={taskView}
                 setTaskView={setTaskView}
@@ -3912,11 +4082,16 @@ const visibleTaskItems = useMemo(() => {
                 onEdit={editTaskTitle}
               />
             )}
-                        {activeTab === "alerts" && (
+            {activeTab === "alerts" && (
               <AlertsTab
                 alerts={searchedAllAlertItems}
                 calendarInvitations={calendarInvitations}
+                eventInvitations={eventInvitations}
+                eventInviteCalendarTargets={eventInviteCalendarTargets}
+                setEventInviteCalendarTargets={setEventInviteCalendarTargets}
+                nonSharedCalendars={nonSharedCalendars}
                 onCalendarInvitationResponse={respondToCalendarInvitation}
+                onEventInvitationResponse={respondToEventInvitation}
               />
             )}
             {activeTab === "stats" && (
@@ -4041,7 +4216,6 @@ const visibleTaskItems = useMemo(() => {
             <DesktopPanel
               selectedDate={selectedDate}
               events={selectedEvents}
-              reminders={selectedReminders}
               tasks={searchedTaskItems}
               alerts={searchedAlertItems}
             />
@@ -4534,7 +4708,6 @@ function DayTimeline({
 function Agenda({
   selectedDate,
   events,
-  reminders,
   tagFor,
   onEdit,
   onCancel,
@@ -4556,7 +4729,6 @@ function Agenda({
 }: {
   selectedDate: Date;
   events: CalendarEvent[];
-  reminders: RescheduleReminder[];
   tagFor: (event: CalendarEvent) => CategoryStyle;
   onEdit: (event: CalendarEvent) => void;
   onCancel: (event: CalendarEvent) => void;
@@ -4627,9 +4799,6 @@ function Agenda({
             />
           ))
         )}
-        {reminders.map((reminder) => (
-          <ReminderCard key={reminder.id} reminder={reminder} />
-        ))}
       </div>
     </section>
   );
@@ -4826,7 +4995,7 @@ function EventCard({
                         </p>
                       )}
                     </div>
-                                        <div className="flex gap-1">
+                    <div className="flex gap-1">
                       <IconButton
                         label={`Edit ${task.title}`}
                         onClick={() => onEditTask(task.id, task.title)}
@@ -4949,10 +5118,10 @@ function CalendarStrip({
       <div className="mb-2 flex items-center justify-between">
         <p className="text-sm font-bold text-[#8e8e93]">Calendars</p>
         {!isPremium && (
-  <span className="rounded-full bg-white/70 px-2.5 py-1 text-xs font-bold text-[#007aff]">
-    {calendars.length}/3 free
-  </span>
-)}
+          <span className="rounded-full bg-white/70 px-2.5 py-1 text-xs font-bold text-[#007aff]">
+            {calendars.length}/3 free
+          </span>
+        )}
       </div>
       <div className="flex gap-2 overflow-x-auto pb-1">
         {calendars.map((calendar) => (
@@ -5060,7 +5229,7 @@ function TasksTab({
                   {task.eventStatus === "cancelled" ? " · event cancelled" : ""}
                 </span>
               </span>
-                            <div className="flex gap-1">
+              <div className="flex gap-1">
                 <IconButton
                   label={`Edit ${task.title}`}
                   onClick={() => onEdit(task.id, task.title)}
@@ -5086,80 +5255,299 @@ function TasksTab({
 function AlertsTab({
   alerts,
   calendarInvitations,
+  eventInvitations,
   onCalendarInvitationResponse,
+  onEventInvitationResponse,
+  eventInviteCalendarTargets,
+  setEventInviteCalendarTargets,
+  nonSharedCalendars,
 }: {
   alerts: RescheduleReminder[];
   calendarInvitations: CalendarInvitation[];
+  eventInvitations: EventInvitation[];
+  eventInviteCalendarTargets: Record<string, string>;
+  setEventInviteCalendarTargets: React.Dispatch<
+    React.SetStateAction<Record<string, string>>
+  >;
+  nonSharedCalendars: AppCalendar[];
   onCalendarInvitationResponse: (
     invitationId: string,
     action: "accept" | "decline",
   ) => void;
+  onEventInvitationResponse: (
+    invitationId: string,
+    action: "accept" | "decline",
+  ) => void;
 }) {
+  const totalCount =
+    alerts.length + calendarInvitations.length + eventInvitations.length;
+
   return (
     <section>
       <SectionTitle
         eyebrow="Alerts"
-        title="Reminders & shared calendars"
-        count={alerts.length + calendarInvitations.length}
+        title="Notification center"
+        count={totalCount}
       />
 
-      <div className="space-y-3">
-        {calendarInvitations.map((invitation) => (
-          <article
-            key={invitation.id}
-            className="rounded-[24px] border border-white/60 bg-white/75 p-4 shadow-lg shadow-black/5 backdrop-blur-xl"
-          >
-            <div className="flex items-start gap-3">
-              <div
-                className="mt-1 size-3 rounded-full"
-                style={{ backgroundColor: invitation.calendar.color }}
+      <div className="space-y-5">
+        <AlertSectionTitle
+          title="Calendar invites"
+          count={calendarInvitations.length}
+        />
+
+        <div className="space-y-3">
+          {calendarInvitations.length === 0 ? (
+            <MiniEmptyState body="No calendar invites." />
+          ) : (
+            calendarInvitations.map((invitation) => (
+              <CalendarInviteCard
+                key={invitation.id}
+                invitation={invitation}
+                onResponse={onCalendarInvitationResponse}
               />
-              <div className="min-w-0 flex-1">
-                <p className="text-base font-black text-[#1d1d1f]">
-                  Shared calendar invite
-                </p>
-                <p className="mt-1 text-sm font-semibold text-[#636366]">
-                  You were invited to{" "}
-                  <span className="font-black">{invitation.calendar.name}</span>{" "}
-                  as {invitation.role}.
-                </p>
-                <p className="mt-1 text-xs font-bold text-[#8e8e93]">
-                  Free plan allows one shared calendar, and shared calendars count toward the 3 calendar limit.
-                </p>
-              </div>
-            </div>
+            ))
+          )}
+        </div>
 
-            <div className="mt-4 grid grid-cols-2 gap-2">
-              <button
-                type="button"
-                onClick={() => onCalendarInvitationResponse(invitation.id, "decline")}
-                className="h-10 rounded-full bg-[#ffe8e6] px-4 text-sm font-black text-[#ff3b30] transition active:scale-95"
-              >
-                Decline
-              </button>
-              <button
-                type="button"
-                onClick={() => onCalendarInvitationResponse(invitation.id, "accept")}
-                className="h-10 rounded-full bg-[#34c759] px-4 text-sm font-black text-white transition active:scale-95"
-              >
-                Accept
-              </button>
-            </div>
-          </article>
-        ))}
+        <AlertSectionTitle
+          title="Event previews"
+          count={eventInvitations.length}
+        />
 
-        {alerts.length === 0 && calendarInvitations.length === 0 ? (
+        <div className="space-y-3">
+          {eventInvitations.length === 0 ? (
+            <MiniEmptyState body="No shared event previews." />
+          ) : (
+            eventInvitations.map((invitation) => (
+              <EventInviteCard
+                key={invitation.id}
+                invitation={invitation}
+                nonSharedCalendars={nonSharedCalendars}
+                selectedCalendarId={
+                  eventInviteCalendarTargets[invitation.id] ??
+                  nonSharedCalendars[0]?.id ??
+                  ""
+                }
+                onCalendarChange={(calendarId) =>
+                  setEventInviteCalendarTargets((current) => ({
+                    ...current,
+                    [invitation.id]: calendarId,
+                  }))
+                }
+                onResponse={onEventInvitationResponse}
+              />
+            ))
+          )}
+        </div>
+
+        <AlertSectionTitle title="Reminders" count={alerts.length} />
+
+        <div className="space-y-3">
+          {alerts.length === 0 ? (
+            <MiniEmptyState body="No reminders." />
+          ) : (
+            alerts.map((alert) => (
+              <ReminderCard key={alert.id} reminder={alert} />
+            ))
+          )}
+        </div>
+
+        {totalCount === 0 && (
           <EmptyState
-            title="No reminders"
-            body="Cancelled events, task reminders, and shared calendar invites will show here."
+            title="No alerts"
+            body="Calendar invites, shared event previews, and reminders will show here."
           />
-        ) : (
-          alerts.map((alert) => (
-            <ReminderCard key={alert.id} reminder={alert} />
-          ))
         )}
       </div>
     </section>
+  );
+}
+
+function AlertSectionTitle({ title, count }: { title: string; count: number }) {
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <h3 className="text-sm font-black uppercase tracking-[0.16em] text-[#8e8e93]">
+        {title}
+      </h3>
+      <span className="rounded-full bg-white/75 px-3 py-1 text-xs font-black text-[#636366] shadow-sm">
+        {count}
+      </span>
+    </div>
+  );
+}
+
+function MiniEmptyState({ body }: { body: string }) {
+  return (
+    <div className="rounded-[22px] border border-dashed border-white/70 bg-white/45 p-4 text-sm font-bold text-[#8e8e93]">
+      {body}
+    </div>
+  );
+}
+
+function CalendarInviteCard({
+  invitation,
+  onResponse,
+}: {
+  invitation: CalendarInvitation;
+  onResponse: (invitationId: string, action: "accept" | "decline") => void;
+}) {
+  return (
+    <article className="rounded-[24px] border border-white/60 bg-white/75 p-4 shadow-lg shadow-black/5 backdrop-blur-xl">
+      <div className="flex items-start gap-3">
+        <div
+          className="mt-1 size-3 rounded-full"
+          style={{ backgroundColor: invitation.calendar.color }}
+        />
+        <div className="min-w-0 flex-1">
+          <p className="text-base font-black text-[#1d1d1f]">
+            Shared calendar invite
+          </p>
+          <p className="mt-1 text-sm font-semibold text-[#636366]">
+            You were invited to{" "}
+            <span className="font-black">{invitation.calendar.name}</span> as{" "}
+            {invitation.role}.
+          </p>
+          <p className="mt-1 text-xs font-bold text-[#8e8e93]">
+            Accepting adds this calendar to your workspace.
+          </p>
+        </div>
+      </div>
+
+      <div className="mt-4 grid grid-cols-2 gap-2">
+        <button
+          type="button"
+          onClick={() => onResponse(invitation.id, "decline")}
+          className="h-10 rounded-full bg-[#ffe8e6] px-4 text-sm font-black text-[#ff3b30] transition active:scale-95"
+        >
+          Decline
+        </button>
+        <button
+          type="button"
+          onClick={() => onResponse(invitation.id, "accept")}
+          className="h-10 rounded-full bg-[#34c759] px-4 text-sm font-black text-white transition active:scale-95"
+        >
+          Accept
+        </button>
+      </div>
+    </article>
+  );
+}
+
+function EventInviteCard({
+  invitation,
+  nonSharedCalendars,
+  selectedCalendarId,
+  onCalendarChange,
+  onResponse,
+}: {
+  invitation: EventInvitation;
+  nonSharedCalendars: AppCalendar[];
+  selectedCalendarId: string;
+  onCalendarChange: (calendarId: string) => void;
+  onResponse: (invitationId: string, action: "accept" | "decline") => void;
+}) {
+  const preview = mapEvent(invitation.event);
+  const taskCount = invitation.event.tasks.length;
+
+  return (
+    <article className="rounded-[24px] border border-[#af52de]/20 bg-[#fbf0ff] p-4 shadow-lg shadow-black/5 backdrop-blur-xl">
+      <div className="flex items-start gap-3">
+        <div className="mt-1 grid size-9 place-items-center rounded-2xl bg-white/80 text-[#af52de]">
+          <Share2 size={17} />
+        </div>
+
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="text-base font-black text-[#1d1d1f]">
+              Shared event preview
+            </p>
+            <span className="rounded-full bg-white/80 px-2.5 py-1 text-[11px] font-black uppercase tracking-[0.08em] text-[#af52de]">
+              Preview only
+            </span>
+          </div>
+
+          <p className="mt-1 text-sm font-black text-[#1d1d1f]">
+            {preview.title}
+          </p>
+
+          <p className="mt-1 text-sm font-semibold text-[#636366]">
+            {preview.date} · {preview.time}
+            {preview.location && preview.location !== "No location"
+              ? ` · ${preview.location}`
+              : ""}
+          </p>
+
+          {taskCount > 0 && (
+            <div className="mt-3 rounded-2xl bg-white/65 p-3">
+              <p className="text-xs font-black uppercase tracking-[0.12em] text-[#8e8e93]">
+                Included tasks
+              </p>
+              <div className="mt-2 space-y-1">
+                {invitation.event.tasks.slice(0, 3).map((task) => (
+                  <p
+                    key={task.id}
+                    className="truncate text-sm font-semibold text-[#636366]"
+                  >
+                    • {task.title}
+                  </p>
+                ))}
+                {taskCount > 3 && (
+                  <p className="text-xs font-bold text-[#8e8e93]">
+                    +{taskCount - 3} more tasks
+                  </p>
+                )}
+              </div>
+            </div>
+          )}
+
+          <p className="mt-3 text-xs font-bold text-[#8e8e93]">
+            Accepting shows this event in your calendar as a shared preview. It
+            does not add the owner’s full calendar.
+          </p>
+        </div>
+      </div>
+      <div className="mt-4 rounded-2xl bg-white/65 p-3">
+        <p className="text-xs font-black uppercase tracking-[0.12em] text-[#8e8e93]">
+          Add to calendar
+        </p>
+
+        {nonSharedCalendars.length === 0 ? (
+          <p className="mt-2 text-sm font-bold text-[#ff3b30]">
+            Create a personal non-shared calendar first.
+          </p>
+        ) : (
+          <select
+            value={selectedCalendarId}
+            onChange={(event) => onCalendarChange(event.target.value)}
+            className="mt-2 h-10 w-full rounded-2xl bg-white/85 px-3 text-sm font-bold outline-none"
+          >
+            {nonSharedCalendars.map((calendar) => (
+              <option key={calendar.id} value={calendar.id}>
+                {calendar.name}
+              </option>
+            ))}
+          </select>
+        )}
+      </div>
+      <div className="mt-4 grid grid-cols-2 gap-2">
+        <button
+          type="button"
+          onClick={() => onResponse(invitation.id, "decline")}
+          className="h-10 rounded-full bg-white/80 px-4 text-sm font-black text-[#ff3b30] transition active:scale-95"
+        >
+          Decline
+        </button>
+        <button
+          type="button"
+          onClick={() => onResponse(invitation.id, "accept")}
+          disabled={nonSharedCalendars.length === 0}
+          className="h-10 rounded-full bg-[#af52de] px-4 text-sm font-black text-white transition active:scale-95 disabled:opacity-45"
+        >
+          Add to calendar
+        </button>
+      </div>
+    </article>
   );
 }
 
@@ -6046,58 +6434,60 @@ function CalendarManagementRow({
       {calendar.members.length > 0 && (
         <div className="mt-3 space-y-2">
           {calendar.members
-  .filter((member) => member.role !== "owner")
-  .map((member) => (
-            <div
-              key={member.id}
-              className="grid gap-2 rounded-2xl bg-[#f2f2f7] px-3 py-2 text-[11px] font-bold text-[#8e8e93] sm:grid-cols-[1fr_auto_auto] sm:items-center"
-            >
-              <span className="flex min-w-0 flex-wrap items-center gap-2">
-  <span className="min-w-0 truncate">
-    {member.displayName || member.email}
-  </span>
+            .filter((member) => member.role !== "owner")
+            .map((member) => (
+              <div
+                key={member.id}
+                className="grid gap-2 rounded-2xl bg-[#f2f2f7] px-3 py-2 text-[11px] font-bold text-[#8e8e93] sm:grid-cols-[1fr_auto_auto] sm:items-center"
+              >
+                <span className="flex min-w-0 flex-wrap items-center gap-2">
+                  <span className="min-w-0 truncate">
+                    {member.displayName || member.email}
+                  </span>
 
-  <span
-    className={[
-      "rounded-full px-2 py-0.5 text-[10px] font-black uppercase tracking-[0.08em] ring-1",
-      memberStatusClasses(member.status),
-    ].join(" ")}
-  >
-    {memberStatusLabel(member.status)}
-  </span>
-</span>
-              {canEdit && member.role !== "owner" ? (
-                <>
-                  <select
-                    value={member.role}
-                    onChange={(event) =>
-                      onUpdateMember(
-                        calendar.id,
-                        member.id,
-                        event.target.value as "owner" | "editor" | "viewer",
-                      )
-                    }
-                    className="h-9 rounded-xl bg-white px-2 text-xs font-bold"
+                  <span
+                    className={[
+                      "rounded-full px-2 py-0.5 text-[10px] font-black uppercase tracking-[0.08em] ring-1",
+                      memberStatusClasses(member.status),
+                    ].join(" ")}
                   >
-                    <option value="viewer">Viewer</option>
-                    <option value="editor">Editor</option>
-                    {member.userId && <option value="owner">Make owner</option>}
-                  </select>
-                  <button
-                    type="button"
-                    onClick={() => onRemoveMember(calendar.id, member.id)}
-                    className="h-9 rounded-xl bg-[#ffe8e6] px-3 text-xs font-black text-[#ff3b30]"
-                  >
-                    Remove
-                  </button>
-                </>
-              ) : (
-                <span className="rounded-full bg-white/75 px-3 py-2 text-center text-xs font-black capitalize">
-                  {member.role}
+                    {memberStatusLabel(member.status)}
+                  </span>
                 </span>
-              )}
-            </div>
-          ))}
+                {canEdit && member.role !== "owner" ? (
+                  <>
+                    <select
+                      value={member.role}
+                      onChange={(event) =>
+                        onUpdateMember(
+                          calendar.id,
+                          member.id,
+                          event.target.value as "owner" | "editor" | "viewer",
+                        )
+                      }
+                      className="h-9 rounded-xl bg-white px-2 text-xs font-bold"
+                    >
+                      <option value="viewer">Viewer</option>
+                      <option value="editor">Editor</option>
+                      {member.userId && (
+                        <option value="owner">Make owner</option>
+                      )}
+                    </select>
+                    <button
+                      type="button"
+                      onClick={() => onRemoveMember(calendar.id, member.id)}
+                      className="h-9 rounded-xl bg-[#ffe8e6] px-3 text-xs font-black text-[#ff3b30]"
+                    >
+                      Remove
+                    </button>
+                  </>
+                ) : (
+                  <span className="rounded-full bg-white/75 px-3 py-2 text-center text-xs font-black capitalize">
+                    {member.role}
+                  </span>
+                )}
+              </div>
+            ))}
         </div>
       )}
     </article>
@@ -7143,13 +7533,11 @@ function DeleteAccountModal({
 function DesktopPanel({
   selectedDate,
   events,
-  reminders,
   tasks,
   alerts,
 }: {
   selectedDate: Date;
   events: CalendarEvent[];
-  reminders: RescheduleReminder[];
   tasks: Array<{
     id: string;
     title: string;
@@ -7161,13 +7549,15 @@ function DesktopPanel({
   const overviewItems = [
     { label: "Events", value: events.length },
     { label: "Tasks", value: tasks.filter((task) => !task.done).length },
-    { label: "Alerts", value: alerts.length + reminders.length },
+    { label: "Alerts", value: alerts.length },
   ];
 
   return (
     <>
       <section className="rounded-[36px] border border-[var(--border-soft)] bg-[var(--surface)] p-6 shadow-2xl shadow-[var(--shadow-soft)] backdrop-blur-3xl">
-        <p className="text-sm font-bold text-[var(--muted)]">Desktop overview</p>
+        <p className="text-sm font-bold text-[var(--muted)]">
+          Desktop overview
+        </p>
         <h2 className="mt-1 text-3xl font-semibold text-[var(--foreground)]">
           {formatLongDate(selectedDate)}
         </h2>
@@ -7354,21 +7744,11 @@ function IconButton({
   );
 }
 
-function Stat({
-  label,
-  value,
-}: {
-  label: string;
-  value: number | string;
-}) {
+function Stat({ label, value }: { label: string; value: number | string }) {
   return (
     <div className="rounded-[26px] border border-[var(--border-soft)] bg-[var(--surface)] p-4 text-center shadow-lg shadow-[var(--shadow-soft)] backdrop-blur-xl">
-      <p className="text-4xl font-black text-[var(--foreground)]">
-        {value}
-      </p>
-      <p className="mt-2 text-sm font-bold text-[var(--muted)]">
-        {label}
-      </p>
+      <p className="text-4xl font-black text-[var(--foreground)]">{value}</p>
+      <p className="mt-2 text-sm font-bold text-[var(--muted)]">{label}</p>
     </div>
   );
 }
@@ -7433,9 +7813,7 @@ function PlaceholderRow({
 }) {
   return (
     <div className="mt-2 flex items-center justify-between rounded-2xl border border-[var(--border-soft)] bg-[var(--surface-muted)] px-3 py-2 text-sm font-bold">
-      <span
-        className={danger ? "text-[#ff453a]" : "text-[var(--muted)]"}
-      >
+      <span className={danger ? "text-[#ff453a]" : "text-[var(--muted)]"}>
         {title}
       </span>
       <span className="rounded-full bg-[var(--surface-strong)] px-2 py-1 text-[11px] text-[var(--muted)]">
@@ -7449,9 +7827,7 @@ function PlanCard({ title, body }: { title: string; body: string }) {
   return (
     <div className="rounded-2xl border border-[var(--border-soft)] bg-[var(--surface)] p-3 shadow-sm shadow-[var(--shadow-soft)]">
       <p className="text-sm font-bold text-[var(--foreground)]">{title}</p>
-      <p className="mt-1 text-xs font-semibold text-[var(--muted)]">
-        {body}
-      </p>
+      <p className="mt-1 text-xs font-semibold text-[var(--muted)]">{body}</p>
     </div>
   );
 }
@@ -7477,9 +7853,7 @@ function ModalHeader({
     <div className="mb-4 flex items-center justify-between">
       <div>
         {eyebrow && (
-          <p className="text-sm font-bold text-[var(--muted)]">
-            {eyebrow}
-          </p>
+          <p className="text-sm font-bold text-[var(--muted)]">{eyebrow}</p>
         )}
         <h2 className="text-xl font-semibold text-[var(--foreground)]">
           {title}

@@ -32,7 +32,7 @@ export type CalendarEvent = {
   cancelledAt?: string;
   createdBy?: string;
   lastEditedBy?: string;
-  sharedWith?: Array<{ id: string; email: string; role: "editor" | "viewer"; status: "pending" | "accepted" }>;
+  sharedWith?: Array<{ id: string; email: string; role: "editor" | "viewer"; status: "pending" | "accepted" | "declined"; }>;
   activity?: Array<{ id: string; text: string; at: string }>;
   rescheduleReminders: RescheduleReminder[];
   tasks: Array<{ id: string; title: string; done: boolean }>;
