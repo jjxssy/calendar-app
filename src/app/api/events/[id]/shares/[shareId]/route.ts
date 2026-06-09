@@ -10,11 +10,20 @@ import { prisma } from "@/lib/prisma";
 
 type Params = Promise<{ id: string; shareId: string }>;
 
-const roles = ["editor", "viewer"] as const;
 const sharedPreviewMarker =
   /\[\[arcgenda-shared-event:(viewer|editor):([^\]]+)\]\]/;
 
-async function requireEventOwner(eventId: string, userId: string) {
+function roleValue(value: unknown): "editor" | "viewer" {
+  const role = stringValue(value);
+
+  if (role !== "editor" && role !== "viewer") {
+    throw new ApiError("Role must be editor or viewer.");
+  }
+
+  return role;
+}
+
+async function requireOwnedEvent(eventId: string, userId: string) {
   const event = await prisma.event.findFirst({
     where: {
       id: eventId,
@@ -39,12 +48,12 @@ async function findRecipientUser(share: {
   email: string;
 }) {
   if (share.userId) {
-    const user = await prisma.user.findUnique({
+    const foundById = await prisma.user.findUnique({
       where: { id: share.userId },
       select: { id: true, email: true },
     });
 
-    if (user) return user;
+    if (foundById) return foundById;
   }
 
   return prisma.user.findUnique({
@@ -53,11 +62,17 @@ async function findRecipientUser(share: {
   });
 }
 
-async function findAcceptedPreviewEvents(
-  recipientUserId: string,
-  share: { id: string; eventId: string },
-  originalEvent: { userId: string; title: string },
-) {
+async function findAcceptedPreviewEvents({
+  recipientUserId,
+  shareId,
+  originalEventId,
+  originalOwnerId,
+}: {
+  recipientUserId: string;
+  shareId: string;
+  originalEventId: string;
+  originalOwnerId: string;
+}) {
   const previews = await prisma.event.findMany({
     where: {
       userId: recipientUserId,
@@ -76,17 +91,17 @@ async function findAcceptedPreviewEvents(
     const match = preview.description?.match(sharedPreviewMarker);
     if (!match) return false;
 
-    const sourceId = match[2];
+    const markerId = match[2];
 
     return (
-      sourceId === share.id ||
-      sourceId === share.eventId ||
-      (sourceId === originalEvent.userId && preview.title === originalEvent.title)
+      markerId === shareId ||
+      markerId === originalEventId ||
+      markerId === originalOwnerId
     );
   });
 }
 
-function replaceSharedPreviewRole(
+function replacePreviewRole(
   description: string | null | undefined,
   role: "editor" | "viewer",
 ) {
@@ -106,14 +121,9 @@ export async function PATCH(
     const user = await requireUser();
     const { id: eventId, shareId } = await context.params;
     const body = await readBody(request);
+    const role = roleValue(body.role);
 
-    const role = stringValue(body.role) ?? "viewer";
-
-    if (!roles.includes(role as (typeof roles)[number])) {
-      throw new ApiError("Role must be editor or viewer.");
-    }
-
-    const originalEvent = await requireEventOwner(eventId, user.id);
+    const originalEvent = await requireOwnedEvent(eventId, user.id);
 
     const existingShare = await prisma.eventShare.findFirst({
       where: {
@@ -127,49 +137,57 @@ export async function PATCH(
     }
 
     const recipientUser = await findRecipientUser(existingShare);
+
     const previewEvents = recipientUser
-      ? await findAcceptedPreviewEvents(
-          recipientUser.id,
-          existingShare,
-          originalEvent,
-        )
+      ? await findAcceptedPreviewEvents({
+          recipientUserId: recipientUser.id,
+          shareId: existingShare.id,
+          originalEventId: existingShare.eventId,
+          originalOwnerId: originalEvent.userId,
+        })
       : [];
 
-    const share = await prisma.$transaction(async (tx) => {
-      const updatedShare = await tx.eventShare.update({
+    const updatedShare = await prisma.$transaction(async (tx) => {
+      const share = await tx.eventShare.update({
         where: { id: existingShare.id },
-        data: {
-          role: role as (typeof roles)[number],
-        },
+        data: { role },
       });
 
-      await Promise.all(
-        previewEvents.map((preview) =>
-          tx.event.update({
-            where: { id: preview.id },
-            data: {
-              description: replaceSharedPreviewRole(
-                preview.description,
-                role as "editor" | "viewer",
-              ),
-            },
-          }),
-        ),
-      );
+      for (const preview of previewEvents) {
+        await tx.event.update({
+          where: { id: preview.id },
+          data: {
+            description: replacePreviewRole(preview.description, role),
+          },
+        });
+      }
 
       await tx.activityHistory.create({
         data: {
           eventId,
           userId: user.id,
           action: "event.share_role_updated",
-          details: `Updated ${updatedShare.email} to ${role}`,
+          details: `Updated ${share.email} to ${role}`,
         },
       });
 
-      return updatedShare;
+      return share;
     });
 
-    return ok({ share, eventId, role: share.role });
+    console.log("EVENT SHARE ROLE UPDATED", {
+      eventId,
+      shareId,
+      role: updatedShare.role,
+      recipientUserId: recipientUser?.id ?? null,
+      updatedPreviewEventIds: previewEvents.map((event) => event.id),
+    });
+
+    return ok({
+      share: updatedShare,
+      eventId,
+      role: updatedShare.role,
+      updatedPreviewEventIds: previewEvents.map((event) => event.id),
+    });
   } catch (error) {
     return fail(error);
   }
@@ -183,7 +201,7 @@ export async function DELETE(
     const user = await requireUser();
     const { id: eventId, shareId } = await context.params;
 
-    await requireEventOwner(eventId, user.id);
+    await requireOwnedEvent(eventId, user.id);
 
     const share = await prisma.eventShare.findFirst({
       where: {

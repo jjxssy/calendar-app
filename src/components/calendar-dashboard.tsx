@@ -3903,14 +3903,43 @@ async function removeSharedEventFromMyCalendar(eventId: string) {
   }
 
   async function updateEventShareRole(
-    eventId: string,
-    shareId: string,
-    role: "editor" | "viewer",
-  ) {
-    const action = `event:${eventId}:share:${shareId}:role`;
-    if (isBusy(action)) return;
+  eventId: string,
+  shareId: string,
+  role: "editor" | "viewer",
+) {
+  console.log("ROLE SWITCH CLICKED", { eventId, shareId, role });
+  const action = `event:${eventId}:share:${shareId}:role`;
+  if (isBusy(action)) return;
 
-    const previousEvents = events;
+  const previousEvents = events;
+
+  setEvents((current) =>
+    current.map((event) =>
+      event.id === eventId
+        ? {
+            ...event,
+            sharedWith: (event.sharedWith ?? []).map((share) =>
+              share.id === shareId ? { ...share, role } : share,
+            ),
+          }
+        : event,
+    ),
+  );
+
+  markBusy(action, true);
+
+  try {
+    const payload = await apiJson<{
+      share: {
+        id: string;
+        email: string;
+        role: "editor" | "viewer";
+        status: "pending" | "accepted" | "declined";
+      };
+    }>(`/api/events/${eventId}/shares/${shareId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ role }),
+    });
 
     setEvents((current) =>
       current.map((event) =>
@@ -3918,31 +3947,29 @@ async function removeSharedEventFromMyCalendar(eventId: string) {
           ? {
               ...event,
               sharedWith: (event.sharedWith ?? []).map((share) =>
-                share.id === shareId ? { ...share, role } : share,
+                share.id === shareId
+                  ? {
+                      ...share,
+                      role: payload.share.role,
+                      status: payload.share.status,
+                    }
+                  : share,
               ),
             }
           : event,
       ),
     );
 
-    markBusy(action, true);
-
-    try {
-      await apiJson(`/api/events/${eventId}/shares/${shareId}`, {
-        method: "PATCH",
-        body: JSON.stringify({ role }),
-      });
-
-      setWorkspaceMessage("Recipient role updated.");
-    } catch (error) {
-      setEvents(previousEvents);
-      setWorkspaceMessage(
-        error instanceof Error ? error.message : "Could not update recipient.",
-      );
-    } finally {
-      markBusy(action, false);
-    }
+    await refreshSchedule("Recipient role updated.");
+  } catch (error) {
+    setEvents(previousEvents);
+    setWorkspaceMessage(
+      error instanceof Error ? error.message : "Could not update recipient.",
+    );
+  } finally {
+    markBusy(action, false);
   }
+}
 
   async function removeEventShare(eventId: string, shareId: string) {
     const action = `event:${eventId}:share:${shareId}:remove`;
@@ -5327,23 +5354,41 @@ onRemoveSharedEvent: () => void;
                           {share.status}
                         </p>
                       </div>
+                      <div className="flex gap-1">
+  <button
+  type="button"
+  onClick={() => {
+    console.log("VIEWER BUTTON CLICKED DIRECTLY", {
+      eventId: event.id,
+      shareId: share.id,
+      currentRole: share.role,
+    });
 
-                      <select
-                        value={share.role}
-                        onChange={(selectEvent) =>
-                          onUpdateShareRole(
-                            event.id,
-                            share.id,
-                            selectEvent.target.value as "editor" | "viewer",
-                          )
-                        }
-                        className="h-9 rounded-2xl bg-white px-3 text-xs font-black text-[#636366] outline-none"
-                        aria-label={`Change ${share.email} role`}
-                      >
-                        <option value="viewer">Viewer</option>
-                        <option value="editor">Editor</option>
-                      </select>
+    onUpdateShareRole(event.id, share.id, "viewer");
+  }}
+  className={[
+    "h-9 rounded-2xl px-3 text-xs font-black transition active:scale-95",
+    share.role === "viewer"
+      ? "bg-[#1d1d1f] text-white"
+      : "bg-white text-[#636366]",
+  ].join(" ")}
+>
+  Viewer
+</button>
 
+  <button
+    type="button"
+    onClick={() => onUpdateShareRole(event.id, share.id, "editor")}
+    className={[
+      "h-9 rounded-2xl px-3 text-xs font-black transition active:scale-95",
+      share.role === "editor"
+        ? "bg-[#1d1d1f] text-white"
+        : "bg-white text-[#636366]",
+    ].join(" ")}
+  >
+    Editor
+  </button>
+</div>
                       <button
                         type="button"
                         onClick={() => onRemoveShare(event.id, share.id)}
