@@ -111,6 +111,9 @@ export async function requireUser() {
   throw new ApiError("You must be signed in.", 401);
 }
 
+const sharedEventPreviewMarker =
+  /\[\[arcgenda-shared-event:(viewer|editor):([^\]]+)\]\]/;
+
 export async function ensureEvent(userId: string, eventId: string) {
   const user = await prisma.user.findUnique({
     where: { id: userId },
@@ -127,11 +130,30 @@ export async function ensureEvent(userId: string, eventId: string) {
         { user: { email: user.email } },
         { calendar: { ownerId: user.id } },
         { calendar: { owner: { email: user.email } } },
-        { calendar: { members: { some: { userId: user.id, status: "accepted" } } } },
-        { calendar: { members: { some: { email: user.email, status: "accepted" } } } },
+        {
+          calendar: {
+            members: {
+              some: {
+                OR: [{ userId: user.id }, { email: user.email }],
+                status: "accepted",
+              },
+            },
+          },
+        },
+        {
+          shares: {
+            some: {
+              OR: [{ userId: user.id }, { email: user.email }],
+              status: "accepted",
+            },
+          },
+        },
       ],
     },
-    include: { calendar: { include: { members: true, owner: true } } },
+    include: {
+      calendar: { include: { members: true, owner: true } },
+      shares: true,
+    },
   });
 
   if (!event) throw new ApiError("Event not found.", 404);
@@ -140,14 +162,57 @@ export async function ensureEvent(userId: string, eventId: string) {
 
 export async function ensureEditableEvent(userId: string, eventId: string) {
   const event = await ensureEvent(userId, eventId);
-  const member = event.calendar?.members.find((item) => item.userId === userId);
-  const canEdit =
-    event.userId === userId ||
-    event.calendar?.ownerId === userId ||
-    member?.role === "owner" ||
-    member?.role === "editor";
 
-  if (!canEdit) throw new ApiError("You do not have permission to edit this event.", 403);
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { id: true, email: true },
+  });
+
+  if (!user) throw new ApiError("You must be signed in.", 401);
+
+  const previewMatch = event.description?.match(sharedEventPreviewMarker);
+
+  if (previewMatch) {
+    const shareId = previewMatch[2];
+
+    const share = await prisma.eventShare.findFirst({
+      where: {
+        id: shareId,
+        status: "accepted",
+        role: "editor",
+        OR: [{ userId: user.id }, { email: user.email }],
+      },
+    });
+
+    if (!share) {
+      throw new ApiError("You only have view access to this shared event.", 403);
+    }
+
+    return event;
+  }
+
+  const member = event.calendar?.members.find(
+    (item) => item.userId === user.id || item.email === user.email,
+  );
+
+  const eventShare = event.shares.find(
+    (share) =>
+      share.status === "accepted" &&
+      share.role === "editor" &&
+      (share.userId === user.id || share.email === user.email),
+  );
+
+  const canEdit =
+    event.userId === user.id ||
+    event.calendar?.ownerId === user.id ||
+    member?.role === "owner" ||
+    member?.role === "editor" ||
+    Boolean(eventShare);
+
+  if (!canEdit) {
+    throw new ApiError("You do not have permission to edit this event.", 403);
+  }
+
   return event;
 }
 

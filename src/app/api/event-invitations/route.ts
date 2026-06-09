@@ -141,8 +141,8 @@ export async function POST(request: Request) {
           userId: user.id,
           calendarId: targetCalendar.id,
           categoryId: null,
-          createdById: user.id,
-          updatedById: user.id,
+          createdById: share.event.createdById ?? share.event.userId,
+updatedById: share.event.updatedById ?? share.event.userId,
           title: share.event.title,
           description: `${
             share.event.description?.trim()

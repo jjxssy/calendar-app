@@ -1020,6 +1020,111 @@ export default function CalendarDashboard() {
   const [notificationActionMessage, setNotificationActionMessage] =
     useState("");
   const [isMobileDevice, setIsMobileDevice] = useState(false);
+  useEffect(() => {
+  if (!isAuthed) return;
+
+  const refreshWhenActive = () => {
+    if (document.visibilityState === "visible") {
+      void refreshSchedule();
+    }
+  };
+
+  window.addEventListener("focus", refreshWhenActive);
+  document.addEventListener("visibilitychange", refreshWhenActive);
+
+  return () => {
+    window.removeEventListener("focus", refreshWhenActive);
+    document.removeEventListener("visibilitychange", refreshWhenActive);
+  };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, [isAuthed]);
+
+useEffect(() => {
+  if (!isAuthed || !session?.user.id || !session?.user.email) return;
+
+  const supabase = createClient();
+
+  const channel = supabase
+    .channel(`arcgenda-live-${session.user.id}`)
+    .on(
+      "postgres_changes",
+      {
+        event: "*",
+        schema: "public",
+        table: "EventShare",
+      },
+      (payload) => {
+        const newRow = payload.new as
+          | {
+              id?: string;
+              userId?: string | null;
+              email?: string | null;
+              role?: "editor" | "viewer";
+              status?: string;
+            }
+          | undefined;
+
+        const oldRow = payload.old as
+          | {
+              id?: string;
+              userId?: string | null;
+              email?: string | null;
+            }
+          | undefined;
+
+        const row = newRow ?? oldRow;
+
+        const isForMe =
+          row?.userId === session.user.id ||
+          row?.email?.toLowerCase() === session.user.email.toLowerCase();
+
+        if (!isForMe) return;
+
+        void refreshSchedule("Shared event permissions updated.");
+      },
+    )
+    .on(
+      "postgres_changes",
+      {
+        event: "*",
+        schema: "public",
+        table: "Event",
+      },
+      (payload) => {
+        const newRow = payload.new as
+          | {
+              userId?: string | null;
+              description?: string | null;
+            }
+          | undefined;
+
+        const oldRow = payload.old as
+          | {
+              userId?: string | null;
+              description?: string | null;
+            }
+          | undefined;
+
+        const row = newRow ?? oldRow;
+
+        const isMySharedPreview =
+          row?.userId === session.user.id &&
+          row?.description?.includes("[[arcgenda-shared-event:");
+
+        if (!isMySharedPreview) return;
+
+        void refreshSchedule("Shared event updated.");
+      },
+    )
+    .subscribe((status) => {
+      console.log("Arcgenda realtime status:", status);
+    });
+
+  return () => {
+    void supabase.removeChannel(channel);
+  };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, [isAuthed, session?.user.id, session?.user.email]);
   const [canVibrate, setCanVibrate] = useState(false);
   const toastRemovalTimers = useRef<Record<string, number>>({});
   const notifiedEventInvitationIdsRef = useRef<Set<string>>(new Set());
@@ -3902,28 +4007,38 @@ async function removeSharedEventFromMyCalendar(eventId: string) {
     }
   }
 
-  async function updateEventShareRole(
+async function updateEventShareRole(
   eventId: string,
   shareId: string,
   role: "editor" | "viewer",
 ) {
-  console.log("ROLE SWITCH CLICKED", { eventId, shareId, role });
   const action = `event:${eventId}:share:${shareId}:role`;
   if (isBusy(action)) return;
 
   const previousEvents = events;
 
   setEvents((current) =>
-    current.map((event) =>
-      event.id === eventId
-        ? {
-            ...event,
-            sharedWith: (event.sharedWith ?? []).map((share) =>
-              share.id === shareId ? { ...share, role } : share,
-            ),
-          }
-        : event,
-    ),
+    current.map((event) => {
+      const sharedPreview = event as SharedPreviewCalendarEvent;
+
+      if (event.id === eventId) {
+        return {
+          ...event,
+          sharedWith: (event.sharedWith ?? []).map((share) =>
+            share.id === shareId ? { ...share, role } : share,
+          ),
+        };
+      }
+
+      if (sharedPreview.sharedById === shareId) {
+        return {
+          ...event,
+          sharedPreviewRole: role,
+        };
+      }
+
+      return event;
+    }),
   );
 
   markBusy(action, true);
@@ -3934,33 +4049,57 @@ async function removeSharedEventFromMyCalendar(eventId: string) {
         id: string;
         email: string;
         role: "editor" | "viewer";
-        status: "pending" | "accepted" | "declined";
+        status: "pending" | "accepted" | "declined" | "revoked";
       };
+      eventId: string;
+      role: "editor" | "viewer";
+      updatedPreviewEventIds?: string[];
     }>(`/api/events/${eventId}/shares/${shareId}`, {
       method: "PATCH",
       body: JSON.stringify({ role }),
     });
 
     setEvents((current) =>
-      current.map((event) =>
-        event.id === eventId
-          ? {
-              ...event,
-              sharedWith: (event.sharedWith ?? []).map((share) =>
-                share.id === shareId
-                  ? {
-                      ...share,
-                      role: payload.share.role,
-                      status: payload.share.status,
-                    }
-                  : share,
-              ),
-            }
-          : event,
-      ),
+      current.map((event) => {
+        const sharedPreview = event as SharedPreviewCalendarEvent;
+        const previewWasUpdated =
+          sharedPreview.sharedById === shareId ||
+          payload.updatedPreviewEventIds?.includes(event.id);
+
+        if (event.id === eventId) {
+          return {
+            ...event,
+            sharedWith: (event.sharedWith ?? []).map((share) =>
+              share.id === shareId
+                ? {
+                    ...share,
+                    role: payload.share.role,
+                    status:
+                      payload.share.status === "revoked"
+                        ? "declined"
+                        : payload.share.status,
+                  }
+                : share,
+            ),
+          };
+        }
+
+        if (previewWasUpdated) {
+          return {
+            ...event,
+            sharedPreviewRole: payload.share.role,
+          };
+        }
+
+        return event;
+      }),
     );
 
-    await refreshSchedule("Recipient role updated.");
+    setWorkspaceMessage(
+      payload.share.role === "viewer"
+        ? "Recipient changed to view-only."
+        : "Recipient can edit this event now.",
+    );
   } catch (error) {
     setEvents(previousEvents);
     setWorkspaceMessage(
