@@ -628,12 +628,14 @@ function mapEvent(event: DbEvent): SharedPreviewCalendarEvent {
       event.updatedBy ?? event.user,
       event.calendar,
     ),
-    sharedWith: event.shares?.map((share) => ({
-      id: share.id,
-      email: share.email,
-      role: share.role,
-      status: share.status,
-    })),
+    sharedWith: event.shares
+  ?.filter((share) => String(share.status) !== "revoked")
+  .map((share) => ({
+    id: share.id,
+    email: share.email,
+    role: share.role,
+    status: share.status,
+  })),
 
     activity: [],
     rescheduleReminders: event.reminders.map(mapReminder),
@@ -904,6 +906,40 @@ function canShareEvent(event: CalendarEvent) {
   const sharedEvent = event as SharedPreviewCalendarEvent;
   return !sharedEvent.sharedPreviewRole;
 }
+const DISMISSED_ALERTS_STORAGE_KEY = "arcgenda-dismissed-alert-ids";
+const PREVIOUS_ALERT_HIDE_GRACE_MS = 30 * 60 * 1000;
+
+type AlertSectionKey = "calendarInvites" | "eventPreviews" | "reminders";
+
+function readDismissedAlertIds() {
+  if (typeof window === "undefined") return new Set<string>();
+
+  try {
+    const parsed = JSON.parse(
+      window.localStorage.getItem(DISMISSED_ALERTS_STORAGE_KEY) ?? "[]",
+    );
+
+    return new Set(Array.isArray(parsed) ? parsed.filter(Boolean) : []);
+  } catch {
+    return new Set<string>();
+  }
+}
+
+function saveDismissedAlertIds(ids: Set<string>) {
+  if (typeof window === "undefined") return;
+
+  window.localStorage.setItem(
+    DISMISSED_ALERTS_STORAGE_KEY,
+    JSON.stringify(Array.from(ids)),
+  );
+}
+
+function isPreviousAlert(alert: RescheduleReminder, now = new Date()) {
+  return (
+    reminderDueAt(alert).getTime() <
+    now.getTime() - PREVIOUS_ALERT_HIDE_GRACE_MS
+  );
+}
 export default function CalendarDashboard() {
   const router = useRouter();
   const today = useMemo(() => new Date(), []);
@@ -955,7 +991,20 @@ export default function CalendarDashboard() {
   const [eventInviteCalendarTargets, setEventInviteCalendarTargets] = useState<
     Record<string, string>
   >({});
-  const [openShareInfo, setOpenShareInfo] = useState<Record<string, boolean>>({});
+  const [openShareInfo, setOpenShareInfo] = useState<Record<string, boolean>>(
+    {},
+  );
+  const [collapsedAlertSections, setCollapsedAlertSections] = useState<
+    Record<AlertSectionKey, boolean>
+  >({
+    calendarInvites: false,
+    eventPreviews: false,
+    reminders: false,
+  });
+
+  const [dismissedAlertIds, setDismissedAlertIds] = useState<Set<string>>(() =>
+    readDismissedAlertIds(),
+  );
   const [alertsSeen, setAlertsSeen] = useState(true);
   const [standaloneTasks, setStandaloneTasks] = useState<StandaloneTask[]>([]);
   const [activeCategory, setActiveCategory] = useState<string | "all">("all");
@@ -991,6 +1040,7 @@ export default function CalendarDashboard() {
   >({});
   const [composerOpen, setComposerOpen] = useState(false);
   const [tagModalOpen, setTagModalOpen] = useState(false);
+  const [restoreRemindersOpen, setRestoreRemindersOpen] = useState(false);
   const [tagDraft, setTagDraft] = useState<TagDraft>({
     label: "",
     icon: "tag",
@@ -1021,110 +1071,110 @@ export default function CalendarDashboard() {
     useState("");
   const [isMobileDevice, setIsMobileDevice] = useState(false);
   useEffect(() => {
-  if (!isAuthed) return;
+    if (!isAuthed) return;
 
-  const refreshWhenActive = () => {
-    if (document.visibilityState === "visible") {
-      void refreshSchedule();
-    }
-  };
+    const refreshWhenActive = () => {
+      if (document.visibilityState === "visible") {
+        void refreshSchedule();
+      }
+    };
 
-  window.addEventListener("focus", refreshWhenActive);
-  document.addEventListener("visibilitychange", refreshWhenActive);
+    window.addEventListener("focus", refreshWhenActive);
+    document.addEventListener("visibilitychange", refreshWhenActive);
 
-  return () => {
-    window.removeEventListener("focus", refreshWhenActive);
-    document.removeEventListener("visibilitychange", refreshWhenActive);
-  };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-}, [isAuthed]);
+    return () => {
+      window.removeEventListener("focus", refreshWhenActive);
+      document.removeEventListener("visibilitychange", refreshWhenActive);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthed]);
 
-useEffect(() => {
-  if (!isAuthed || !session?.user.id || !session?.user.email) return;
+  useEffect(() => {
+    if (!isAuthed || !session?.user.id || !session?.user.email) return;
 
-  const supabase = createClient();
+    const supabase = createClient();
 
-  const channel = supabase
-    .channel(`arcgenda-live-${session.user.id}`)
-    .on(
-      "postgres_changes",
-      {
-        event: "*",
-        schema: "public",
-        table: "EventShare",
-      },
-      (payload) => {
-        const newRow = payload.new as
-          | {
-              id?: string;
-              userId?: string | null;
-              email?: string | null;
-              role?: "editor" | "viewer";
-              status?: string;
-            }
-          | undefined;
+    const channel = supabase
+      .channel(`arcgenda-live-${session.user.id}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "EventShare",
+        },
+        (payload) => {
+          const newRow = payload.new as
+            | {
+                id?: string;
+                userId?: string | null;
+                email?: string | null;
+                role?: "editor" | "viewer";
+                status?: string;
+              }
+            | undefined;
 
-        const oldRow = payload.old as
-          | {
-              id?: string;
-              userId?: string | null;
-              email?: string | null;
-            }
-          | undefined;
+          const oldRow = payload.old as
+            | {
+                id?: string;
+                userId?: string | null;
+                email?: string | null;
+              }
+            | undefined;
 
-        const row = newRow ?? oldRow;
+          const row = newRow ?? oldRow;
 
-        const isForMe =
-          row?.userId === session.user.id ||
-          row?.email?.toLowerCase() === session.user.email.toLowerCase();
+          const isForMe =
+            row?.userId === session.user.id ||
+            row?.email?.toLowerCase() === session.user.email.toLowerCase();
 
-        if (!isForMe) return;
+          if (!isForMe) return;
 
-        void refreshSchedule("Shared event permissions updated.");
-      },
-    )
-    .on(
-      "postgres_changes",
-      {
-        event: "*",
-        schema: "public",
-        table: "Event",
-      },
-      (payload) => {
-        const newRow = payload.new as
-          | {
-              userId?: string | null;
-              description?: string | null;
-            }
-          | undefined;
+          void refreshSchedule("Shared event permissions updated.");
+        },
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "Event",
+        },
+        (payload) => {
+          const newRow = payload.new as
+            | {
+                userId?: string | null;
+                description?: string | null;
+              }
+            | undefined;
 
-        const oldRow = payload.old as
-          | {
-              userId?: string | null;
-              description?: string | null;
-            }
-          | undefined;
+          const oldRow = payload.old as
+            | {
+                userId?: string | null;
+                description?: string | null;
+              }
+            | undefined;
 
-        const row = newRow ?? oldRow;
+          const row = newRow ?? oldRow;
 
-        const isMySharedPreview =
-          row?.userId === session.user.id &&
-          row?.description?.includes("[[arcgenda-shared-event:");
+          const isMySharedPreview =
+            row?.userId === session.user.id &&
+            row?.description?.includes("[[arcgenda-shared-event:");
 
-        if (!isMySharedPreview) return;
+          if (!isMySharedPreview) return;
 
-        void refreshSchedule("Shared event updated.");
-      },
-    )
-    .subscribe((status) => {
-      console.log("Arcgenda realtime status:", status);
-    });
+          void refreshSchedule("Shared event updated.");
+        },
+      )
+      .subscribe((status) => {
+        console.log("Arcgenda realtime status:", status);
+      });
 
-  return () => {
-    void supabase.removeChannel(channel);
-  };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-}, [isAuthed, session?.user.id, session?.user.email]);
+    return () => {
+      void supabase.removeChannel(channel);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthed, session?.user.id, session?.user.email]);
   const [canVibrate, setCanVibrate] = useState(false);
   const toastRemovalTimers = useRef<Record<string, number>>({});
   const notifiedEventInvitationIdsRef = useRef<Set<string>>(new Set());
@@ -1488,6 +1538,86 @@ useEffect(() => {
         .includes(normalizedWorkspaceQuery),
     );
   }, [alertItems, normalizedWorkspaceQuery]);
+
+  const visibleSearchedAlertItems = useMemo(() => {
+    const now = new Date();
+
+    return searchedAllAlertItems.filter(
+      (alert) =>
+        !dismissedAlertIds.has(alert.id) && !isPreviousAlert(alert, now),
+    );
+  }, [dismissedAlertIds, searchedAllAlertItems]);
+
+  const hiddenReminderCount =
+    searchedAllAlertItems.length - visibleSearchedAlertItems.length;
+
+  const hiddenReminderItems = useMemo(() => {
+    const now = new Date();
+
+    return searchedAllAlertItems.filter(
+      (alert) => dismissedAlertIds.has(alert.id) || isPreviousAlert(alert, now),
+    );
+  }, [dismissedAlertIds, searchedAllAlertItems]);
+
+  function dismissReminderAlert(alertId: string) {
+    setDismissedAlertIds((current) => {
+      const next = new Set(current);
+      next.add(alertId);
+      saveDismissedAlertIds(next);
+      return next;
+    });
+
+    firedAlerts.current.add(alertId);
+  }
+
+  function hidePreviousReminderAlerts() {
+    const now = new Date();
+
+    setDismissedAlertIds((current) => {
+      const next = new Set(current);
+
+      searchedAllAlertItems.forEach((alert) => {
+        if (isPreviousAlert(alert, now)) {
+          next.add(alert.id);
+          firedAlerts.current.add(alert.id);
+        }
+      });
+
+      saveDismissedAlertIds(next);
+      return next;
+    });
+
+    setWorkspaceMessage("Previous reminders hidden.");
+  }
+
+  function restoreHiddenReminderAlert(alertId: string) {
+    setDismissedAlertIds((current) => {
+      const next = new Set(current);
+      next.delete(alertId);
+      saveDismissedAlertIds(next);
+      return next;
+    });
+
+    firedAlerts.current.delete(alertId);
+    setWorkspaceMessage("Reminder restored.");
+  }
+
+  function restoreAllHiddenReminderAlerts() {
+    setDismissedAlertIds(new Set());
+    saveDismissedAlertIds(new Set());
+    searchedAllAlertItems.forEach((alert) =>
+      firedAlerts.current.delete(alert.id),
+    );
+    setRestoreRemindersOpen(false);
+    setWorkspaceMessage("Hidden reminders restored.");
+  }
+
+  function toggleAlertSection(section: AlertSectionKey) {
+    setCollapsedAlertSections((current) => ({
+      ...current,
+      [section]: !current[section],
+    }));
+  }
 
   const hasNewAlerts =
     (calendarInvitations.length > 0 || eventInvitations.length > 0) &&
@@ -2863,18 +2993,52 @@ useEffect(() => {
   async function deleteEvent(id: string) {
     const action = `event:${id}:delete`;
     if (isBusy(action)) return;
+
     const previousEvents = events;
+    const previousEventReminders = eventReminders;
+    const previousDismissedAlertIds = dismissedAlertIds;
+
     setEvents((current) =>
       current.map((event) =>
-        event.id === id ? { ...event, status: "archived" } : event,
+        event.id === id
+          ? {
+              ...event,
+              status: "archived",
+              rescheduleReminders: [],
+            }
+          : event,
       ),
     );
+
+    setEventReminders((current) =>
+      current.filter((reminder) => reminder.eventId !== id),
+    );
+
+    setDismissedAlertIds((current) => {
+      const next = new Set(
+        Array.from(current).filter((alertId) => !alertId.includes(id)),
+      );
+      saveDismissedAlertIds(next);
+      return next;
+    });
+
+    Array.from(firedAlerts.current).forEach((alertId) => {
+      if (alertId.includes(id)) {
+        firedAlerts.current.delete(alertId);
+      }
+    });
+
     markBusy(action, true);
+
     try {
       await apiJson(`/api/events/${id}`, { method: "DELETE" });
-      setWorkspaceMessage("Event archived.");
+      setWorkspaceMessage("Event archived and its reminders were hidden.");
     } catch (error) {
       setEvents(previousEvents);
+      setEventReminders(previousEventReminders);
+      setDismissedAlertIds(previousDismissedAlertIds);
+      saveDismissedAlertIds(previousDismissedAlertIds);
+
       setWorkspaceMessage(
         error instanceof Error ? error.message : "Could not archive event.",
       );
@@ -2883,7 +3047,7 @@ useEffect(() => {
     }
   }
 
-async function removeSharedEventFromMyCalendar(eventId: string) {
+  async function removeSharedEventFromMyCalendar(eventId: string) {
     const action = `event:${eventId}:remove-shared-preview`;
     if (isBusy(action)) return;
 
@@ -2896,11 +3060,11 @@ async function removeSharedEventFromMyCalendar(eventId: string) {
     markBusy(action, true);
 
     try {
-      await apiJson(`/api/events/${eventId}/share/remove-me`, {
-        method: "DELETE",
-      });
+      await apiJson(`/api/events/${eventId}/shares/remove-me`, {
+  method: "DELETE",
+});
 
-      setWorkspaceMessage("Shared event removed from your calendar.");
+await refreshSchedule("Shared event removed from your calendar.");
     } catch (error) {
       setEvents(previousEvents);
       setWorkspaceMessage(
@@ -4007,87 +4171,33 @@ async function removeSharedEventFromMyCalendar(eventId: string) {
     }
   }
 
-async function updateEventShareRole(
-  eventId: string,
-  shareId: string,
-  role: "editor" | "viewer",
-) {
-  const action = `event:${eventId}:share:${shareId}:role`;
-  if (isBusy(action)) return;
+  async function updateEventShareRole(
+    eventId: string,
+    shareId: string,
+    role: "editor" | "viewer",
+  ) {
+    const action = `event:${eventId}:share:${shareId}:role`;
+    if (isBusy(action)) return;
 
-  const previousEvents = events;
-
-  setEvents((current) =>
-    current.map((event) => {
-      const sharedPreview = event as SharedPreviewCalendarEvent;
-
-      if (event.id === eventId) {
-        return {
-          ...event,
-          sharedWith: (event.sharedWith ?? []).map((share) =>
-            share.id === shareId ? { ...share, role } : share,
-          ),
-        };
-      }
-
-      if (sharedPreview.sharedById === shareId) {
-        return {
-          ...event,
-          sharedPreviewRole: role,
-        };
-      }
-
-      return event;
-    }),
-  );
-
-  markBusy(action, true);
-
-  try {
-    const payload = await apiJson<{
-      share: {
-        id: string;
-        email: string;
-        role: "editor" | "viewer";
-        status: "pending" | "accepted" | "declined" | "revoked";
-      };
-      eventId: string;
-      role: "editor" | "viewer";
-      updatedPreviewEventIds?: string[];
-    }>(`/api/events/${eventId}/shares/${shareId}`, {
-      method: "PATCH",
-      body: JSON.stringify({ role }),
-    });
+    const previousEvents = events;
 
     setEvents((current) =>
       current.map((event) => {
         const sharedPreview = event as SharedPreviewCalendarEvent;
-        const previewWasUpdated =
-          sharedPreview.sharedById === shareId ||
-          payload.updatedPreviewEventIds?.includes(event.id);
 
         if (event.id === eventId) {
           return {
             ...event,
             sharedWith: (event.sharedWith ?? []).map((share) =>
-              share.id === shareId
-                ? {
-                    ...share,
-                    role: payload.share.role,
-                    status:
-                      payload.share.status === "revoked"
-                        ? "declined"
-                        : payload.share.status,
-                  }
-                : share,
+              share.id === shareId ? { ...share, role } : share,
             ),
           };
         }
 
-        if (previewWasUpdated) {
+        if (sharedPreview.sharedById === shareId) {
           return {
             ...event,
-            sharedPreviewRole: payload.share.role,
+            sharedPreviewRole: role,
           };
         }
 
@@ -4095,31 +4205,90 @@ async function updateEventShareRole(
       }),
     );
 
-    setWorkspaceMessage(
-      payload.share.role === "viewer"
-        ? "Recipient changed to view-only."
-        : "Recipient can edit this event now.",
-    );
-  } catch (error) {
-    setEvents(previousEvents);
-    setWorkspaceMessage(
-      error instanceof Error ? error.message : "Could not update recipient.",
-    );
-  } finally {
-    markBusy(action, false);
+    markBusy(action, true);
+
+    try {
+      const payload = await apiJson<{
+        share: {
+          id: string;
+          email: string;
+          role: "editor" | "viewer";
+          status: "pending" | "accepted" | "declined" | "revoked";
+        };
+        eventId: string;
+        role: "editor" | "viewer";
+        updatedPreviewEventIds?: string[];
+      }>(`/api/events/${eventId}/shares/${shareId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ role }),
+      });
+
+      setEvents((current) =>
+        current.map((event) => {
+          const sharedPreview = event as SharedPreviewCalendarEvent;
+          const previewWasUpdated =
+            sharedPreview.sharedById === shareId ||
+            payload.updatedPreviewEventIds?.includes(event.id);
+
+          if (event.id === eventId) {
+            return {
+              ...event,
+              sharedWith: (event.sharedWith ?? []).map((share) =>
+                share.id === shareId
+                  ? {
+                      ...share,
+                      role: payload.share.role,
+                      status:
+                        payload.share.status === "revoked"
+                          ? "declined"
+                          : payload.share.status,
+                    }
+                  : share,
+              ),
+            };
+          }
+
+          if (previewWasUpdated) {
+            return {
+              ...event,
+              sharedPreviewRole: payload.share.role,
+            };
+          }
+
+          return event;
+        }),
+      );
+
+      setWorkspaceMessage(
+        payload.share.role === "viewer"
+          ? "Recipient changed to view-only."
+          : "Recipient can edit this event now.",
+      );
+    } catch (error) {
+      setEvents(previousEvents);
+      setWorkspaceMessage(
+        error instanceof Error ? error.message : "Could not update recipient.",
+      );
+    } finally {
+      markBusy(action, false);
+    }
   }
-}
 
   async function removeEventShare(eventId: string, shareId: string) {
-    const action = `event:${eventId}:share:${shareId}:remove`;
-    if (isBusy(action)) return;
+  const action = `event:${eventId}:share:${shareId}:remove`;
+  if (isBusy(action)) return;
 
-    if (!window.confirm("Remove this recipient from the shared event?")) return;
+  if (!window.confirm("Remove this recipient from the shared event?")) return;
 
-    const previousEvents = events;
+  const previousEvents = events;
 
-    setEvents((current) =>
-      current.map((event) =>
+  setEvents((current) =>
+    current
+      .filter((event) => {
+        const sharedPreview = event as SharedPreviewCalendarEvent;
+        return sharedPreview.sharedById !== shareId;
+      })
+      .map((event) =>
         event.id === eventId
           ? {
               ...event,
@@ -4129,26 +4298,25 @@ async function updateEventShareRole(
             }
           : event,
       ),
+  );
+
+  markBusy(action, true);
+
+  try {
+    await apiJson(`/api/events/${eventId}/shares/${shareId}`, {
+      method: "DELETE",
+    });
+
+    await refreshSchedule("Recipient removed.");
+  } catch (error) {
+    setEvents(previousEvents);
+    setWorkspaceMessage(
+      error instanceof Error ? error.message : "Could not remove recipient.",
     );
-
-    markBusy(action, true);
-
-    try {
-      await apiJson(`/api/events/${eventId}/shares/${shareId}`, {
-        method: "DELETE",
-      });
-
-      setWorkspaceMessage("Recipient removed.");
-    } catch (error) {
-      setEvents(previousEvents);
-      setWorkspaceMessage(
-        error instanceof Error ? error.message : "Could not remove recipient.",
-      );
-    } finally {
-      markBusy(action, false);
-    }
+  } finally {
+    markBusy(action, false);
   }
-
+}
 
   function updateNotificationSetting(
     key: keyof AppSettings["notifications"],
@@ -4352,46 +4520,46 @@ async function updateEventShareRole(
                   />
                 )}
                 <Agenda
-  selectedDate={selectedDate}
-  events={selectedEvents}
-  tagFor={tagFor}
-  onEdit={openEditEvent}
-  onCancel={(event: CalendarEvent) => {
-    setCancelTarget(event);
-    setCancellationReason(event.cancellationReason ?? "");
-    setCancelScope("series-cancel");
-  }}
-  onDelete={deleteEvent}
-  onUndoCancel={undoCancelEvent}
-  unboundTasks={unboundUndoneTasks}
-  taskDrafts={eventTaskDrafts}
-  shareDrafts={shareDrafts}
-  canShareEvent={canShareEventFromWorkspace}
-  onCreateTask={createTaskForEvent}
-  onLinkTask={(eventId: string, taskId: string) =>
-    linkTaskToEvent(taskId, eventId)
-  }
-  onRemoveSharedEvent={removeSharedEventFromMyCalendar}
-  onToggleTask={toggleTask}
-  onUnlinkTask={unlinkTaskFromEvent}
-  onDeleteTask={deleteTask}
-  onEditTask={editTaskTitle}
-  onTaskDraftChange={(eventId: string, value: string) =>
-    setEventTaskDrafts((current) => ({
-      ...current,
-      [eventId]: value,
-    }))
-  }
-  onShareDraftChange={(eventId: string, value: string) =>
-    setShareDrafts((current) => ({
-      ...current,
-      [eventId]: value,
-    }))
-  }
-  onShare={shareEvent}
-  onUpdateEventShareRole={updateEventShareRole}
-  onRemoveEventShare={removeEventShare}
-/>
+                  selectedDate={selectedDate}
+                  events={selectedEvents}
+                  tagFor={tagFor}
+                  onEdit={openEditEvent}
+                  onCancel={(event: CalendarEvent) => {
+                    setCancelTarget(event);
+                    setCancellationReason(event.cancellationReason ?? "");
+                    setCancelScope("series-cancel");
+                  }}
+                  onDelete={deleteEvent}
+                  onUndoCancel={undoCancelEvent}
+                  unboundTasks={unboundUndoneTasks}
+                  taskDrafts={eventTaskDrafts}
+                  shareDrafts={shareDrafts}
+                  canShareEvent={canShareEventFromWorkspace}
+                  onCreateTask={createTaskForEvent}
+                  onLinkTask={(eventId: string, taskId: string) =>
+                    linkTaskToEvent(taskId, eventId)
+                  }
+                  onRemoveSharedEvent={removeSharedEventFromMyCalendar}
+                  onToggleTask={toggleTask}
+                  onUnlinkTask={unlinkTaskFromEvent}
+                  onDeleteTask={deleteTask}
+                  onEditTask={editTaskTitle}
+                  onTaskDraftChange={(eventId: string, value: string) =>
+                    setEventTaskDrafts((current) => ({
+                      ...current,
+                      [eventId]: value,
+                    }))
+                  }
+                  onShareDraftChange={(eventId: string, value: string) =>
+                    setShareDrafts((current) => ({
+                      ...current,
+                      [eventId]: value,
+                    }))
+                  }
+                  onShare={shareEvent}
+                  onUpdateEventShareRole={updateEventShareRole}
+                  onRemoveEventShare={removeEventShare}
+                />
               </>
             )}
             {activeTab === "tasks" && (
@@ -4407,7 +4575,7 @@ async function updateEventShareRole(
             )}
             {activeTab === "alerts" && (
               <AlertsTab
-                alerts={searchedAllAlertItems}
+                alerts={visibleSearchedAlertItems}
                 calendarInvitations={calendarInvitations}
                 eventInvitations={eventInvitations}
                 eventInviteCalendarTargets={eventInviteCalendarTargets}
@@ -4415,6 +4583,12 @@ async function updateEventShareRole(
                 nonSharedCalendars={nonSharedCalendars}
                 openShareInfo={openShareInfo}
                 setOpenShareInfo={setOpenShareInfo}
+                collapsedSections={collapsedAlertSections}
+                hiddenReminderCount={hiddenReminderCount}
+                onToggleSection={toggleAlertSection}
+                onDismissReminder={dismissReminderAlert}
+                onHidePreviousReminders={hidePreviousReminderAlerts}
+                onRestoreHiddenReminders={() => setRestoreRemindersOpen(true)}
                 onCalendarInvitationResponse={respondToCalendarInvitation}
                 onEventInvitationResponse={respondToEventInvitation}
               />
@@ -4638,6 +4812,14 @@ async function updateEventShareRole(
           onConfirm={requestAccountDeletion}
         />
       )}
+      {restoreRemindersOpen && (
+        <RestoreReminderModal
+          reminders={hiddenReminderItems}
+          onRestore={restoreHiddenReminderAlert}
+          onRestoreAll={restoreAllHiddenReminderAlerts}
+          onClose={() => setRestoreRemindersOpen(false)}
+        />
+      )}
       <ToastViewport toasts={toasts} onClose={removeToast} />
     </main>
   );
@@ -4817,7 +4999,7 @@ function TagFilters({
         className={[
           "shrink-0 rounded-full px-4 py-2 text-sm font-semibold shadow-sm transition active:scale-95",
           activeCategory === "all"
-            ? "bg-[#1d1d1f] text-white"
+            ? "bg-[#1d1d1f] text-white shadow-sm dark:bg-white dark:text-[#1d1d1f]"
             : "bg-white/70 text-[#7c7c8a]",
         ].join(" ")}
       >
@@ -4939,7 +5121,7 @@ function WeekView({
             className={[
               "min-h-28 rounded-[24px] border border-white/60 p-2 text-left shadow-lg backdrop-blur-2xl transition active:scale-95",
               selected
-                ? "bg-[#1d1d1f] text-white"
+                ? "bg-[#1d1d1f] text-white shadow-sm dark:bg-white dark:text-[#1d1d1f]"
                 : "bg-white/62 text-[#27272a]",
             ].join(" ")}
           >
@@ -5162,9 +5344,9 @@ function EventCard({
   onShareDraftChange,
   onShare,
   canShare,
-onUpdateShareRole,
-onRemoveShare,
-onRemoveSharedEvent,
+  onUpdateShareRole,
+  onRemoveShare,
+  onRemoveSharedEvent,
 }: {
   event: CalendarEvent;
   tag: CategoryStyle;
@@ -5186,13 +5368,13 @@ onRemoveSharedEvent,
   onShareDraftChange: (value: string) => void;
   onShare: () => void;
   canShare: boolean;
-onUpdateShareRole: (
-  eventId: string,
-  shareId: string,
-  role: "editor" | "viewer",
-) => void;
-onRemoveShare: (eventId: string, shareId: string) => void;
-onRemoveSharedEvent: () => void;
+  onUpdateShareRole: (
+    eventId: string,
+    shareId: string,
+    role: "editor" | "viewer",
+  ) => void;
+  onRemoveShare: (eventId: string, shareId: string) => void;
+  onRemoveSharedEvent: () => void;
 }) {
   const doneTasks = event.tasks.filter((task) => task.done).length;
   const cancelled = event.status === "cancelled";
@@ -5207,8 +5389,8 @@ onRemoveSharedEvent: () => void;
         cancelled ? "opacity-60 grayscale-[0.25]" : "",
       ].join(" ")}
       style={{
-        background: `linear-gradient(135deg, ${tag.color}22, rgba(255,255,255,.78))`,
-      }}
+  background: `linear-gradient(135deg, ${tag.color}14, rgba(255,255,255,.96))`,
+}}
     >
       <div className="flex gap-3">
         <div
@@ -5222,7 +5404,7 @@ onRemoveSharedEvent: () => void;
                 {event.pinned && <Pin size={14} className="text-[#ff9500]" />}
                 <h4
                   className={[
-                    "truncate text-base font-semibold",
+                    "truncate text-base font-black text-[#1d1d1f] dark:text-white",
                     cancelled ? "line-through decoration-2" : "",
                   ].join(" ")}
                 >
@@ -5234,13 +5416,14 @@ onRemoveSharedEvent: () => void;
                   </span>
                 )}
               </div>
-              <p className="mt-1 text-sm font-semibold text-[#7c7c8a]">
+              <p className="mt-1 text-sm font-semibold text-[#7c7c8a] dark:text-zinc-200">
                 {calendar?.name ?? "Personal"} ·{" "}
                 {event.recurrence === "none" ? "One-time" : event.recurrence} ·{" "}
                 {event.priority} priority
               </p>
-              <p className="mt-1 text-xs font-bold text-[#8e8e93]">
-                Created by {event.createdByName ?? event.createdBy ?? "you"} · Last edited by{" "}
+              <p className="mt-1 text-xs font-bold text-[#8e8e93] dark:text-zinc-300">
+                Created by {event.createdByName ?? event.createdBy ?? "you"} ·
+                Last edited by{" "}
                 {event.updatedByName ?? event.lastEditedBy ?? "you"}
               </p>
               {cancelled && event.cancellationReason && (
@@ -5252,10 +5435,10 @@ onRemoveSharedEvent: () => void;
                 <div className="mt-2 flex flex-wrap items-center gap-2">
                   <span
                     className={[
-                      "rounded-full px-2 py-1 text-[0.7rem] font-semibold",
+                      "rounded-full px-2.5 py-1 text-[0.7rem] font-black shadow-sm",
                       sharedPreview.sharedPreviewRole === "viewer"
-                        ? "bg-zinc-100 text-zinc-600"
-                        : "bg-emerald-100 text-emerald-700",
+                        ? "bg-zinc-200 text-zinc-800 dark:bg-zinc-700 dark:text-zinc-100"
+                        : "bg-emerald-200 text-emerald-900 dark:bg-emerald-500/25 dark:text-emerald-100",
                     ].join(" ")}
                   >
                     {sharedPreview.sharedPreviewRole === "viewer"
@@ -5266,7 +5449,7 @@ onRemoveSharedEvent: () => void;
                   <button
                     type="button"
                     onClick={onRemoveSharedEvent}
-                    className="rounded-full border border-rose-200 px-3 py-1 text-[0.7rem] font-semibold text-rose-600 transition hover:bg-rose-50"
+                    className="rounded-full bg-rose-100 px-3 py-1 text-[0.7rem] font-black text-rose-700 shadow-sm transition active:scale-95 hover:bg-rose-200 dark:bg-rose-500/15 dark:text-rose-100 dark:hover:bg-rose-500/25"
                   >
                     Remove from my calendar
                   </button>
@@ -5325,7 +5508,7 @@ onRemoveSharedEvent: () => void;
               />
             )}
           </div>
-          <div className="mt-4 rounded-3xl bg-white/55 p-3 backdrop-blur">
+          <div className="mt-4 rounded-3xl border border-black/5 bg-white/92 p-3 shadow-sm shadow-black/5 backdrop-blur dark:border-white/10 dark:bg-white/10">
             <div className="mb-2 flex items-center justify-between gap-2">
               <p className="text-sm font-bold text-[#636366]">Linked tasks</p>
               {cancelled && (
@@ -5408,7 +5591,7 @@ onRemoveSharedEvent: () => void;
                     onChange={(inputEvent) =>
                       onTaskDraftChange(inputEvent.target.value)
                     }
-                    className="h-10 min-w-0 rounded-2xl bg-white/75 px-3 text-sm font-semibold outline-none placeholder:text-[#9b9baa]"
+                    className="h-10 min-w-0 rounded-2xl border border-black/5 bg-white px-3 text-sm font-bold text-[#1d1d1f] shadow-inner shadow-black/5 outline-none placeholder:text-[#9b9baa] focus:border-[#007aff]/40 focus:ring-4 focus:ring-[#007aff]/10 dark:border-white/10 dark:bg-white/10 dark:text-white dark:placeholder:text-zinc-400"
                     placeholder="New task for this event"
                   />
                   <button
@@ -5442,14 +5625,14 @@ onRemoveSharedEvent: () => void;
             )}
           </div>
           {shareable && (
-            <div className="mt-3 rounded-3xl bg-white/55 p-3 backdrop-blur">
+            <div className="mt-3 rounded-3xl border border-black/10 bg-white/95 p-3 shadow-md shadow-black/10 backdrop-blur dark:border-white/10 dark:bg-white/10">
               <div className="mb-2 flex items-center justify-between gap-2">
-                <p className="text-sm font-bold text-[#636366]">
-                  Specific event sharing
-                </p>
-                <span className="rounded-full bg-[#f2f2f7] px-2 py-0.5 text-[11px] font-bold text-[#8e8e93]">
-                  Invite only
-                </span>
+                <p className="text-sm font-black text-[#3a3a3c] drop-shadow-sm dark:text-white">
+  Specific event sharing
+</p>
+                <span className="rounded-full bg-[#eef4ff] px-2.5 py-1 text-[11px] font-black text-[#007aff] dark:bg-[#007aff]/20 dark:text-[#8ec5ff]">
+  Invite only
+</span>
               </div>
               <div className="grid grid-cols-[1fr_auto] gap-2">
                 <input
@@ -5457,7 +5640,7 @@ onRemoveSharedEvent: () => void;
                   onChange={(inputEvent) =>
                     onShareDraftChange(inputEvent.target.value)
                   }
-                  className="h-10 min-w-0 rounded-2xl bg-white/75 px-3 text-sm font-semibold outline-none placeholder:text-[#9b9baa]"
+                  className="h-10 min-w-0 rounded-2xl border border-black/5 bg-white px-3 text-sm font-bold text-[#1d1d1f] shadow-inner shadow-black/5 outline-none placeholder:text-[#9b9baa] focus:border-[#007aff]/40 focus:ring-4 focus:ring-[#007aff]/10 dark:border-white/10 dark:bg-white/10 dark:text-white dark:placeholder:text-zinc-400"
                   placeholder="person@example.com"
                 />
                 <button
@@ -5474,12 +5657,12 @@ onRemoveSharedEvent: () => void;
                   {(event.sharedWith ?? []).map((share) => (
                     <div
                       key={share.id}
-                      className="grid gap-2 rounded-2xl bg-white/65 p-2 sm:grid-cols-[1fr_auto_auto]"
+                      className="grid gap-2 rounded-2xl border border-black/5 bg-white/90 p-2 shadow-sm shadow-black/5 sm:grid-cols-[1fr_auto_auto] dark:border-white/10 dark:bg-white/10"
                     >
                       <div className="min-w-0">
-                        <p className="truncate text-xs font-black text-[#1d1d1f]">
-                          {share.email}
-                        </p>
+                        <p className="truncate text-xs font-black text-[#1d1d1f] dark:text-white">
+  {share.email}
+</p>
                         <p
                           className={[
                             "mt-1 text-[11px] font-black uppercase tracking-[0.08em]",
@@ -5494,44 +5677,46 @@ onRemoveSharedEvent: () => void;
                         </p>
                       </div>
                       <div className="flex gap-1">
-  <button
-  type="button"
-  onClick={() => {
-    console.log("VIEWER BUTTON CLICKED DIRECTLY", {
-      eventId: event.id,
-      shareId: share.id,
-      currentRole: share.role,
-    });
+                        <button
+                          type="button"
+                          onClick={() => {
+                            console.log("VIEWER BUTTON CLICKED DIRECTLY", {
+                              eventId: event.id,
+                              shareId: share.id,
+                              currentRole: share.role,
+                            });
 
-    onUpdateShareRole(event.id, share.id, "viewer");
-  }}
-  className={[
-    "h-9 rounded-2xl px-3 text-xs font-black transition active:scale-95",
-    share.role === "viewer"
-      ? "bg-[#1d1d1f] text-white"
-      : "bg-white text-[#636366]",
-  ].join(" ")}
->
-  Viewer
-</button>
+                            onUpdateShareRole(event.id, share.id, "viewer");
+                          }}
+                          className={[
+                            "h-9 rounded-2xl px-3 text-xs font-black transition active:scale-95",
+                            share.role === "viewer"
+                              ? "bg-[#1d1d1f] text-white shadow-sm dark:bg-white dark:text-[#1d1d1f]"
+                              : "bg-[#f2f2f7] text-[#3a3a3c] hover:bg-[#e5e5ea] dark:bg-white/10 dark:text-zinc-200 dark:hover:bg-white/15"
+                          ].join(" ")}
+                        >
+                          Viewer
+                        </button>
 
-  <button
-    type="button"
-    onClick={() => onUpdateShareRole(event.id, share.id, "editor")}
-    className={[
-      "h-9 rounded-2xl px-3 text-xs font-black transition active:scale-95",
-      share.role === "editor"
-        ? "bg-[#1d1d1f] text-white"
-        : "bg-white text-[#636366]",
-    ].join(" ")}
-  >
-    Editor
-  </button>
-</div>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            onUpdateShareRole(event.id, share.id, "editor")
+                          }
+                          className={[
+                            "h-9 rounded-2xl px-3 text-xs font-black transition active:scale-95",
+                            share.role === "editor"
+                              ? "bg-[#1d1d1f] text-white shadow-sm dark:bg-white dark:text-[#1d1d1f]"
+                              : "bg-white text-[#636366]",
+                          ].join(" ")}
+                        >
+                          Editor
+                        </button>
+                      </div>
                       <button
                         type="button"
                         onClick={() => onRemoveShare(event.id, share.id)}
-                        className="h-9 rounded-2xl bg-[#ffe8e6] px-3 text-xs font-black text-[#ff3b30] transition active:scale-95"
+                        className="h-9 rounded-2xl bg-[#ffe8e6] px-3 text-xs font-black text-[#c8291f] shadow-sm transition hover:bg-[#ffd6d1] active:scale-95 dark:bg-[#ff3b30]/20 dark:text-[#ffb4ad] dark:hover:bg-[#ff3b30]/30"
                       >
                         Remove
                       </button>
@@ -5711,6 +5896,12 @@ function AlertsTab({
   nonSharedCalendars,
   openShareInfo,
   setOpenShareInfo,
+  collapsedSections,
+  hiddenReminderCount,
+  onToggleSection,
+  onDismissReminder,
+  onHidePreviousReminders,
+  onRestoreHiddenReminders,
 }: {
   alerts: RescheduleReminder[];
   calendarInvitations: CalendarInvitation[];
@@ -5721,7 +5912,15 @@ function AlertsTab({
   >;
   nonSharedCalendars: AppCalendar[];
   openShareInfo: Record<string, boolean>;
-  setOpenShareInfo: React.Dispatch<React.SetStateAction<Record<string, boolean>>>;
+  setOpenShareInfo: React.Dispatch<
+    React.SetStateAction<Record<string, boolean>>
+  >;
+  collapsedSections: Record<AlertSectionKey, boolean>;
+  hiddenReminderCount: number;
+  onToggleSection: (section: AlertSectionKey) => void;
+  onDismissReminder: (alertId: string) => void;
+  onHidePreviousReminders: () => void;
+  onRestoreHiddenReminders: () => void;
   onCalendarInvitationResponse: (
     invitationId: string,
     action: "accept" | "decline",
@@ -5742,70 +5941,115 @@ function AlertsTab({
         count={totalCount}
       />
 
+      <div className="mb-4 rounded-[24px] border border-white/60 bg-white/55 p-3 shadow-lg shadow-black/5 backdrop-blur-xl">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <p className="text-sm font-black text-[#1d1d1f]">Alert cleanup</p>
+            <p className="mt-1 text-xs font-black text-[#6b6a73] dark:text-zinc-300">
+              Reminder cards can be swiped sideways, dragged, or closed with the
+              icon.
+            </p>
+          </div>
+
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={onHidePreviousReminders}
+              className="rounded-full bg-white/80 px-3 py-2 text-xs font-black text-[#636366] shadow-sm transition active:scale-95"
+            >
+              Hide previous
+            </button>
+
+            {hiddenReminderCount > 0 && (
+              <button
+                type="button"
+                onClick={onRestoreHiddenReminders}
+                className="rounded-full bg-[#007aff] px-3 py-2 text-xs font-black text-white shadow-sm transition active:scale-95"
+              >
+                Restore hidden ({hiddenReminderCount})
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+
       <div className="space-y-5">
-        <AlertSectionTitle
+        <CollapsibleAlertSection
           title="Calendar invites"
           count={calendarInvitations.length}
-        />
-
-        <div className="space-y-3">
+          collapsed={collapsedSections.calendarInvites}
+          onToggle={() => onToggleSection("calendarInvites")}
+        >
           {calendarInvitations.length === 0 ? (
             <MiniEmptyState body="No calendar invites." />
           ) : (
-            calendarInvitations.map((invitation) => (
-              <CalendarInviteCard
-                key={invitation.id}
-                invitation={invitation}
-                onResponse={onCalendarInvitationResponse}
-              />
-            ))
+            <div className="space-y-3">
+              {calendarInvitations.map((invitation) => (
+                <CalendarInviteCard
+                  key={invitation.id}
+                  invitation={invitation}
+                  onResponse={onCalendarInvitationResponse}
+                />
+              ))}
+            </div>
           )}
-        </div>
+        </CollapsibleAlertSection>
 
-        <AlertSectionTitle
+        <CollapsibleAlertSection
           title="Event previews"
           count={eventInvitations.length}
-        />
-
-        <div className="space-y-3">
+          collapsed={collapsedSections.eventPreviews}
+          onToggle={() => onToggleSection("eventPreviews")}
+        >
           {eventInvitations.length === 0 ? (
             <MiniEmptyState body="No shared event previews." />
           ) : (
-            eventInvitations.map((invitation) => (
-              <EventInviteCard
-                key={invitation.id}
-                invitation={invitation}
-                nonSharedCalendars={nonSharedCalendars}
-                selectedCalendarId={
-                  eventInviteCalendarTargets[invitation.id] ??
-                  nonSharedCalendars[0]?.id ??
-                  ""
-                }
-                onCalendarChange={(calendarId) =>
-                  setEventInviteCalendarTargets((current) => ({
-                    ...current,
-                    [invitation.id]: calendarId,
-                  }))
-                }
-                openShareInfo={openShareInfo}
-                setOpenShareInfo={setOpenShareInfo}
-                onResponse={onEventInvitationResponse}
-              />
-            ))
+            <div className="space-y-3">
+              {eventInvitations.map((invitation) => (
+                <EventInviteCard
+                  key={invitation.id}
+                  invitation={invitation}
+                  nonSharedCalendars={nonSharedCalendars}
+                  selectedCalendarId={
+                    eventInviteCalendarTargets[invitation.id] ??
+                    nonSharedCalendars[0]?.id ??
+                    ""
+                  }
+                  onCalendarChange={(calendarId) =>
+                    setEventInviteCalendarTargets((current) => ({
+                      ...current,
+                      [invitation.id]: calendarId,
+                    }))
+                  }
+                  openShareInfo={openShareInfo}
+                  setOpenShareInfo={setOpenShareInfo}
+                  onResponse={onEventInvitationResponse}
+                />
+              ))}
+            </div>
           )}
-        </div>
+        </CollapsibleAlertSection>
 
-        <AlertSectionTitle title="Reminders" count={alerts.length} />
-
-        <div className="space-y-3">
+        <CollapsibleAlertSection
+          title="Reminders"
+          count={alerts.length}
+          collapsed={collapsedSections.reminders}
+          onToggle={() => onToggleSection("reminders")}
+        >
           {alerts.length === 0 ? (
             <MiniEmptyState body="No reminders." />
           ) : (
-            alerts.map((alert) => (
-              <ReminderCard key={alert.id} reminder={alert} />
-            ))
+            <div className="space-y-3">
+              {alerts.map((alert) => (
+                <SwipeDismissReminderCard
+                  key={alert.id}
+                  reminder={alert}
+                  onDismiss={() => onDismissReminder(alert.id)}
+                />
+              ))}
+            </div>
           )}
-        </div>
+        </CollapsibleAlertSection>
 
         {totalCount === 0 && (
           <EmptyState
@@ -5815,6 +6059,157 @@ function AlertsTab({
         )}
       </div>
     </section>
+  );
+}
+function CollapsibleAlertSection({
+  title,
+  count,
+  collapsed,
+  onToggle,
+  children,
+}: {
+  title: string;
+  count: number;
+  collapsed: boolean;
+  onToggle: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="rounded-[26px] border border-white/55 bg-white/40 p-3 shadow-lg shadow-black/5 backdrop-blur-xl">
+      <button
+        type="button"
+        onClick={onToggle}
+        className="flex w-full items-center justify-between gap-3 rounded-2xl px-1 py-1 text-left transition active:scale-[0.99]"
+        aria-expanded={!collapsed}
+      >
+        <span>
+          <span className="block text-sm font-black uppercase tracking-[0.16em] text-[#8e8e93]">
+            {title}
+          </span>
+          <span className="mt-1 block text-xs font-bold text-[#636366]">
+            {collapsed ? "Tap to expand" : "Tap to collapse"}
+          </span>
+        </span>
+
+        <span className="flex items-center gap-2">
+          <span className="rounded-full bg-white/75 px-3 py-1 text-xs font-black text-[#636366] shadow-sm">
+            {count}
+          </span>
+          <span
+            className={[
+              "grid size-8 place-items-center rounded-full bg-white/70 text-[#636366] transition",
+              collapsed ? "rotate-0" : "rotate-180",
+            ].join(" ")}
+          >
+            ⌄
+          </span>
+        </span>
+      </button>
+
+      {!collapsed && <div className="mt-3">{children}</div>}
+    </section>
+  );
+}
+function SwipeDismissReminderCard({
+  reminder,
+  onDismiss,
+}: {
+  reminder: RescheduleReminder;
+  onDismiss: () => void;
+}) {
+  const [dragX, setDragX] = useState(0);
+  const startX = useRef<number | null>(null);
+  const dismissing = Math.abs(dragX) > 88;
+
+  function finishDrag() {
+    if (Math.abs(dragX) > 120) {
+      onDismiss();
+    } else {
+      setDragX(0);
+    }
+
+    startX.current = null;
+  }
+
+  return (
+    <div
+      className="relative overflow-hidden rounded-[24px]"
+      onWheel={(event) => {
+        if (
+          Math.abs(event.deltaX) > 70 &&
+          Math.abs(event.deltaX) > Math.abs(event.deltaY)
+        ) {
+          event.preventDefault();
+          onDismiss();
+        }
+      }}
+    >
+      <div className="absolute inset-0 flex items-center justify-end rounded-[24px] bg-[#ffe8e6] px-5 text-xs font-black text-[#ff3b30]">
+        Release to hide
+      </div>
+
+      <article
+        className={[
+          "relative touch-pan-y rounded-[24px] border border-white/60 bg-white/75 p-4 shadow-lg shadow-black/5 backdrop-blur-xl transition-transform",
+          dismissing ? "opacity-90" : "",
+        ].join(" ")}
+        style={{
+          transform: `translateX(${dragX}px)`,
+        }}
+        onPointerDown={(event) => {
+          startX.current = event.clientX;
+          event.currentTarget.setPointerCapture(event.pointerId);
+        }}
+        onPointerMove={(event) => {
+          if (startX.current === null) return;
+
+          const nextX = event.clientX - startX.current;
+          if (Math.abs(nextX) < 8) return;
+
+          setDragX(Math.max(-180, Math.min(180, nextX)));
+        }}
+        onPointerUp={finishDrag}
+        onPointerCancel={finishDrag}
+      >
+        <div className="flex items-start gap-3">
+          <button
+            type="button"
+            onPointerDown={(event) => {
+              event.stopPropagation();
+              startX.current = null;
+            }}
+            onPointerMove={(event) => {
+              event.stopPropagation();
+            }}
+            onPointerUp={(event) => {
+              event.stopPropagation();
+            }}
+            onClick={(event) => {
+              event.stopPropagation();
+              onDismiss();
+            }}
+            className="mt-0.5 grid size-9 shrink-0 place-items-center rounded-full bg-[#f2f2f7] text-[#8e8e93] transition hover:bg-[#ffe8e6] hover:text-[#ff3b30] active:scale-95"
+            aria-label={`Hide ${reminder.title}`}
+            title="Hide reminder"
+          >
+            <X size={16} />
+          </button>
+
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-sm font-black text-[#1d1d1f]">
+              {reminder.title}
+            </p>
+            <p className="mt-1 text-sm font-semibold text-[#636366]">
+              {reminder.date} · {reminder.time}
+            </p>
+            <p className="mt-2 text-xs font-bold text-[#8e8e93]">
+              Swipe sideways with two fingers, drag the card, or press the icon
+              to hide.
+            </p>
+          </div>
+        </div>
+      </article>
+    </div>
   );
 }
 
@@ -5862,7 +6257,7 @@ function CalendarInviteCard({
             <span className="font-black">{invitation.calendar.name}</span> as{" "}
             {invitation.role}.
           </p>
-          <p className="mt-1 text-xs font-bold text-[#8e8e93]">
+          <p className="mt-1 text-xs font-black text-[#6b6a73] dark:text-zinc-300">
             Accepting adds this calendar to your workspace.
           </p>
         </div>
@@ -5902,7 +6297,9 @@ function EventInviteCard({
   selectedCalendarId: string;
   onCalendarChange: (calendarId: string) => void;
   openShareInfo: Record<string, boolean>;
-  setOpenShareInfo: React.Dispatch<React.SetStateAction<Record<string, boolean>>>;
+  setOpenShareInfo: React.Dispatch<
+    React.SetStateAction<Record<string, boolean>>
+  >;
   onResponse: (invitationId: string, action: "accept" | "decline") => void;
 }) {
   const preview = mapEvent(invitation.event);
@@ -5975,7 +6372,8 @@ function EventInviteCard({
 
             {openShareInfo[invitation.id] ? (
               <p className="mt-2 rounded-2xl bg-sky-50 px-3 py-2 text-xs font-semibold text-sky-700">
-                Accepting adds this single event only. It does not add the owner&apos;s full calendar.
+                Accepting adds this single event only. It does not add the
+                owner&apos;s full calendar.
               </p>
             ) : null}
           </div>
@@ -6832,7 +7230,7 @@ function CalendarManagementRow({
             />
             <p className="truncate text-sm font-black">{calendar.name}</p>
           </div>
-          <p className="mt-1 text-xs font-bold text-[#8e8e93]">
+          <p className="mt-1 text-xs font-black text-[#6b6a73] dark:text-zinc-300">
             {calendar.shared ? "Shared calendar" : "Private calendar"} · Role:{" "}
             {calendar.role}
           </p>
@@ -8142,7 +8540,7 @@ function ReminderCard({ reminder }: { reminder: RescheduleReminder }) {
           <RotateCcw size={18} />
         </span>
         <div className="min-w-0">
-          <h4 className="truncate text-base font-semibold">{reminder.title}</h4>
+          <h4 className="truncate text-base font-black text-[#1d1d1f] dark:text-white">{reminder.title}</h4>
           <p className="text-sm font-semibold text-[#7c7c8a]">
             {reminder.date} at {reminder.time}
           </p>
@@ -8375,6 +8773,90 @@ function Toggle({
         />
       </span>
     </button>
+  );
+}
+
+function RestoreReminderModal({
+  reminders,
+  onRestore,
+  onRestoreAll,
+  onClose,
+}: {
+  reminders: RescheduleReminder[];
+  onRestore: (alertId: string) => void;
+  onRestoreAll: () => void;
+  onClose: () => void;
+}) {
+  return (
+    <ModalShell>
+      <div className="w-full max-w-lg rounded-[32px] border border-white/60 bg-white/88 p-5 shadow-2xl shadow-black/20 backdrop-blur-2xl dark:bg-[#1f1f2a]/95">
+        <ModalHeader
+          eyebrow="Alert recovery"
+          title="Restore hidden reminders"
+          onClose={onClose}
+        />
+
+        {reminders.length === 0 ? (
+          <div className="rounded-[24px] border border-dashed border-white/70 bg-white/55 p-4 text-sm font-bold text-[#8e8e93] dark:bg-white/10 dark:text-zinc-300">
+            No hidden reminders right now.
+          </div>
+        ) : (
+          <>
+            <p className="mb-3 text-sm font-semibold text-[#636366] dark:text-zinc-300">
+              Choose the reminder you want back in your alert center.
+            </p>
+
+            <div className="max-h-[48vh] space-y-2 overflow-y-auto pr-1">
+              {reminders.map((reminder) => (
+                <div
+                  key={reminder.id}
+                  className="flex items-center gap-3 rounded-[22px] border border-white/60 bg-white/70 p-3 shadow-sm shadow-black/5 dark:border-white/10 dark:bg-white/10"
+                >
+                  <div className="grid size-10 shrink-0 place-items-center rounded-2xl bg-[#e5f1ff] text-[#007aff] dark:bg-[#007aff]/20 dark:text-[#8ec5ff]">
+                    <BellRing size={17} />
+                  </div>
+
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-black text-[#1d1d1f] dark:text-white">
+                      {reminder.title}
+                    </p>
+                    <p className="mt-1 text-xs font-bold text-[#8e8e93] dark:text-zinc-300">
+                      {reminder.date} · {reminder.time}
+                    </p>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => onRestore(reminder.id)}
+                    className="rounded-full bg-[#34c759] px-3 py-2 text-xs font-black text-white shadow-sm transition active:scale-95"
+                  >
+                    Restore
+                  </button>
+                </div>
+              ))}
+            </div>
+
+            <div className="mt-4 grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={onClose}
+                className="h-11 rounded-full bg-[#f2f2f7] px-4 text-sm font-black text-[#636366] transition active:scale-95 dark:bg-white/10 dark:text-zinc-200"
+              >
+                Close
+              </button>
+
+              <button
+                type="button"
+                onClick={onRestoreAll}
+                className="h-11 rounded-full bg-[#007aff] px-4 text-sm font-black text-white transition active:scale-95"
+              >
+                Restore all
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </ModalShell>
   );
 }
 

@@ -201,7 +201,7 @@ export async function DELETE(
     const user = await requireUser();
     const { id: eventId, shareId } = await context.params;
 
-    await requireOwnedEvent(eventId, user.id);
+    const originalEvent = await requireOwnedEvent(eventId, user.id);
 
     const share = await prisma.eventShare.findFirst({
       where: {
@@ -214,23 +214,51 @@ export async function DELETE(
       throw new ApiError("Share recipient not found.", 404);
     }
 
-    await prisma.eventShare.update({
-      where: { id: share.id },
-      data: {
-        status: "revoked",
-      },
+    const recipientUser = await findRecipientUser(share);
+
+    const previewEvents = recipientUser
+      ? await findAcceptedPreviewEvents({
+          recipientUserId: recipientUser.id,
+          shareId: share.id,
+          originalEventId: share.eventId,
+          originalOwnerId: originalEvent.userId,
+        })
+      : [];
+
+    await prisma.$transaction(async (tx) => {
+      await tx.eventShare.update({
+        where: { id: share.id },
+        data: {
+          status: "revoked",
+        },
+      });
+
+      if (previewEvents.length > 0) {
+        await tx.event.deleteMany({
+          where: {
+            id: {
+              in: previewEvents.map((event) => event.id),
+            },
+          },
+        });
+      }
+
+      await tx.activityHistory.create({
+        data: {
+          eventId,
+          userId: user.id,
+          action: "event.share_revoked",
+          details: `Removed ${share.email} from event sharing`,
+        },
+      });
     });
 
-    await prisma.activityHistory.create({
-      data: {
-        eventId,
-        userId: user.id,
-        action: "event.share_revoked",
-        details: `Removed ${share.email} from event sharing`,
-      },
+    return ok({
+      removed: true,
+      eventId,
+      shareId,
+      removedPreviewEventIds: previewEvents.map((event) => event.id),
     });
-
-    return ok({ removed: true, eventId, shareId });
   } catch (error) {
     return fail(error);
   }

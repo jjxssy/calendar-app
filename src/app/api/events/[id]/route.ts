@@ -111,7 +111,10 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
   }
 }
 
-export async function DELETE(_request: Request, context: { params: Promise<{ id: string }> }) {
+export async function DELETE(
+  _request: Request,
+  context: { params: Promise<{ id: string }> },
+) {
   try {
     const user = await requireUser();
     const { id } = await context.params;
@@ -120,7 +123,24 @@ export async function DELETE(_request: Request, context: { params: Promise<{ id:
     const event = await prisma.$transaction(async (tx) => {
       const archived = await tx.event.update({
         where: { id },
-        data: { status: "archived", archivedAt: new Date(), updatedById: user.id },
+        data: {
+          status: "archived",
+          archivedAt: new Date(),
+          updatedById: user.id,
+        },
+      });
+
+      await tx.reminder.deleteMany({
+        where: { eventId: id },
+      });
+
+      await tx.task.updateMany({
+        where: { eventId: id },
+        data: {
+          reminderDate: null,
+          reminderTime: null,
+          notificationSentAt: null,
+        },
       });
 
       await tx.activityHistory.create({
@@ -129,7 +149,7 @@ export async function DELETE(_request: Request, context: { params: Promise<{ id:
           eventId: id,
           userId: user.id,
           action: "event.archived",
-          details: `Archived "${archived.title}"`,
+          details: `Archived "${archived.title}" and cleared its reminders`,
         },
       });
 

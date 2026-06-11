@@ -208,7 +208,13 @@ export async function POST(request: Request) {
           category: true,
           tasks: true,
           reminders: true,
-          shares: true,
+          shares: {
+  where: {
+    status: {
+      not: "revoked",
+    },
+  },
+},
         },
       });
 
