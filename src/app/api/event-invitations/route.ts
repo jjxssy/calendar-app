@@ -158,16 +158,6 @@ updatedById: share.event.updatedById ?? share.event.userId,
           recurrence: "none",
           pinned: false,
           status: "scheduled",
-          tasks: {
-            create: share.event.tasks.map((task) => ({
-              userId: user.id,
-              title: task.title,
-              description: task.description,
-              completed: false,
-              dueDate: task.dueDate,
-              priority: task.priority,
-            })),
-          },
         },
         include: {
           calendar: { include: { members: true } },

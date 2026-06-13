@@ -37,6 +37,14 @@ const eventShareInclude = {
   },
 };
 
+const sharedEventPreviewMarker =
+  /\[\[arcgenda-shared-event:(viewer|editor):([^\]]+)\]\]/;
+
+function previewShareId(description?: string | null) {
+  return description?.match(sharedEventPreviewMarker)?.[2];
+}
+
+
 function priorityValue(value: unknown) {
   if (value === undefined) return undefined;
 
@@ -136,14 +144,69 @@ export async function GET(request: Request) {
           },
         },
         category: true,
-        tasks: true,
+        tasks: {
+  include: {
+    reminders: true,
+  },
+  orderBy: {
+    createdAt: "asc",
+  },
+},
         reminders: true,
         shares: eventShareInclude,
       },
       orderBy: [{ pinned: "desc" }, { startDate: "asc" }],
     });
 
-    return ok({ events: await withEventActors(events) });
+    const previewShareIds = Array.from(
+  new Set(
+    events
+      .map((event) => previewShareId(event.description))
+      .filter(Boolean) as string[],
+  ),
+);
+
+const previewShares =
+  previewShareIds.length > 0
+    ? await prisma.eventShare.findMany({
+        where: {
+          id: { in: previewShareIds },
+          status: "accepted",
+        },
+        include: {
+          event: {
+            include: {
+              tasks: {
+                include: {
+                  reminders: true,
+                },
+                orderBy: {
+                  createdAt: "asc",
+                },
+              },
+            },
+          },
+        },
+      })
+    : [];
+
+const originalTasksByShareId = new Map(
+  previewShares.map((share) => [share.id, share.event.tasks]),
+);
+
+const eventsWithSharedTasks = events.map((event) => {
+  const shareId = previewShareId(event.description);
+  const originalTasks = shareId ? originalTasksByShareId.get(shareId) : null;
+
+  if (!originalTasks) return event;
+
+  return {
+    ...event,
+    tasks: originalTasks,
+  };
+});
+
+return ok({ events: await withEventActors(eventsWithSharedTasks) });
   } catch (error) {
     return fail(error);
   }

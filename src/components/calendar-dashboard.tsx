@@ -132,6 +132,7 @@ type TaskDraft = {
   reminderDate: string;
   reminderTime: string;
   eventId: string;
+  completed: boolean;
 };
 
 type TaskListItem = {
@@ -936,6 +937,40 @@ function readDismissedAlertIds() {
   }
 }
 
+const PERMANENTLY_DELETED_ALERTS_STORAGE_KEY =
+  "arcgenda-permanently-deleted-alert-ids";
+
+function readPermanentlyDeletedAlertIds() {
+  if (typeof window === "undefined") return new Set<string>();
+
+  try {
+    const parsed = JSON.parse(
+      window.localStorage.getItem(PERMANENTLY_DELETED_ALERTS_STORAGE_KEY) ?? "[]",
+    );
+
+    return new Set(Array.isArray(parsed) ? parsed.filter(Boolean) : []);
+  } catch {
+    return new Set<string>();
+  }
+}
+
+function savePermanentlyDeletedAlertIds(ids: Set<string>) {
+  if (typeof window === "undefined") return;
+
+  window.localStorage.setItem(
+    PERMANENTLY_DELETED_ALERTS_STORAGE_KEY,
+    JSON.stringify(Array.from(ids)),
+  );
+}
+
+function isGeneratedAlertId(id: string) {
+  return (
+    id.startsWith("event-alert-") ||
+    id.startsWith("task-alert-") ||
+    id.startsWith("daily-agenda-")
+  );
+}
+
 function saveDismissedAlertIds(ids: Set<string>) {
   if (typeof window === "undefined") return;
 
@@ -951,6 +986,7 @@ function isPreviousAlert(alert: RescheduleReminder, now = new Date()) {
     now.getTime() - PREVIOUS_ALERT_HIDE_GRACE_MS
   );
 }
+
 export default function CalendarDashboard() {
   const router = useRouter();
   const today = useMemo(() => new Date(), []);
@@ -1041,12 +1077,13 @@ export default function CalendarDashboard() {
   const [composerKind, setComposerKind] = useState<ComposerKind>("event");
   const [selectedTaskIds, setSelectedTaskIds] = useState<string[]>([]);
   const [taskDraft, setTaskDraft] = useState<TaskDraft>({
-    title: "",
-    reminderEnabled: false,
-    reminderDate: toDateKey(today),
-    reminderTime: currentTimeValue(today),
-    eventId: "none",
-  });
+  title: "",
+  reminderEnabled: false,
+  reminderDate: toDateKey(today),
+  reminderTime: currentTimeValue(today),
+  eventId: "none",
+  completed: false,
+});
   const [eventTaskDrafts, setEventTaskDrafts] = useState<
     Record<string, string>
   >({});
@@ -1196,6 +1233,17 @@ function hidePendingRemovedShareIds(items: CalendarEvent[]) {
           void refreshSchedule("Shared event updated.");
         },
       )
+      .on(
+  "postgres_changes",
+  {
+    event: "*",
+    schema: "public",
+    table: "Task",
+  },
+  () => {
+    void refreshSchedule("Shared task updated.");
+  },
+)
       .subscribe((status) => {
         console.log("Arcgenda realtime status:", status);
       });
@@ -1570,24 +1618,25 @@ function hidePendingRemovedShareIds(items: CalendarEvent[]) {
   }, [alertItems, normalizedWorkspaceQuery]);
 
   const visibleSearchedAlertItems = useMemo(() => {
-    const now = new Date();
+  const now = new Date();
 
-    return searchedAllAlertItems.filter(
-      (alert) =>
-        !dismissedAlertIds.has(alert.id) && !isPreviousAlert(alert, now),
-    );
-  }, [dismissedAlertIds, searchedAllAlertItems]);
+  return searchedAllAlertItems.filter(
+    (alert) =>
+      !dismissedAlertIds.has(alert.id) && !isPreviousAlert(alert, now),
+  );
+}, [dismissedAlertIds, searchedAllAlertItems]);
 
-  const hiddenReminderCount =
-    searchedAllAlertItems.length - visibleSearchedAlertItems.length;
+const hiddenReminderItems = useMemo(() => {
+  const now = new Date();
 
-  const hiddenReminderItems = useMemo(() => {
-    const now = new Date();
+  return searchedAllAlertItems.filter(
+    (alert) =>
+      !isGeneratedAlertId(alert.id) &&
+      (dismissedAlertIds.has(alert.id) || isPreviousAlert(alert, now)),
+  );
+}, [dismissedAlertIds, searchedAllAlertItems]);
 
-    return searchedAllAlertItems.filter(
-      (alert) => dismissedAlertIds.has(alert.id) || isPreviousAlert(alert, now),
-    );
-  }, [dismissedAlertIds, searchedAllAlertItems]);
+const hiddenReminderCount = hiddenReminderItems.length;
 
   function dismissReminderAlert(alertId: string) {
     setDismissedAlertIds((current) => {
@@ -1648,6 +1697,56 @@ function hidePendingRemovedShareIds(items: CalendarEvent[]) {
       [section]: !current[section],
     }));
   }
+
+async function deleteHiddenReminderPermanently(reminderId: string) {
+  if (isGeneratedAlertId(reminderId)) {
+    setWorkspaceMessage("Generated alerts are not database reminders.");
+    return;
+  }
+
+  const previousEvents = events;
+  const previousReminders = eventReminders;
+  const previousDismissed = dismissedAlertIds;
+
+  setEventReminders((current) =>
+    current.filter((reminder) => reminder.id !== reminderId),
+  );
+
+  setDismissedAlertIds((current) => {
+    const next = new Set(current);
+    next.delete(reminderId);
+    saveDismissedAlertIds(next);
+    return next;
+  });
+
+  setEvents((current) =>
+    current.map((event) => ({
+      ...event,
+      rescheduleReminders: event.rescheduleReminders.filter(
+        (reminder) => reminder.id !== reminderId,
+      ),
+    })),
+  );
+
+  firedAlerts.current.delete(reminderId);
+
+  try {
+    await apiJson(`/api/reminders/${reminderId}`, {
+      method: "DELETE",
+    });
+
+    await refreshSchedule("Reminder deleted completely.");
+  } catch (error) {
+    setEvents(previousEvents);
+    setEventReminders(previousReminders);
+    setDismissedAlertIds(previousDismissed);
+    saveDismissedAlertIds(previousDismissed);
+
+    setWorkspaceMessage(
+      error instanceof Error ? error.message : "Could not delete reminder.",
+    );
+  }
+}
 
   const hasNewAlerts =
     (calendarInvitations.length > 0 || eventInvitations.length > 0) &&
@@ -2627,6 +2726,7 @@ function hidePendingRemovedShareIds(items: CalendarEvent[]) {
       reminderDate: toDateKey(selectedDate),
       reminderTime: currentTimeValue(now),
       eventId: "none",
+      completed: false,
     });
     setComposerOpen(true);
   }
@@ -2659,30 +2759,70 @@ function hidePendingRemovedShareIds(items: CalendarEvent[]) {
     setComposerOpen(true);
   }
 
-  async function saveTask(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+ async function saveTask(event: FormEvent<HTMLFormElement>) {
+  event.preventDefault();
 
-    if (composerSubmitting) return;
+  if (composerSubmitting) return;
 
-    const title = taskDraft.title.trim();
+  const title = taskDraft.title.trim();
 
-    if (!title) {
-      setWorkspaceMessage("Task title is required.");
-      return;
-    }
+  if (!title) {
+    setWorkspaceMessage("Task title is required.");
+    return;
+  }
 
-    const eventId =
-      taskDraft.eventId && taskDraft.eventId !== "none"
-        ? taskDraft.eventId
-        : undefined;
+  const eventId =
+    taskDraft.eventId && taskDraft.eventId !== "none"
+      ? taskDraft.eventId
+      : undefined;
 
-    const taskDate = taskDraft.reminderDate || toDateKey(selectedDate);
-    const taskTime = taskDraft.reminderTime || currentTimeValue();
+  const taskDate = taskDraft.reminderDate || toDateKey(selectedDate);
+  const taskTime = taskDraft.reminderTime || currentTimeValue();
 
-    const dueDate = `${taskDate}T${taskTime}:00`;
+  const dueDate = `${taskDate}T${taskTime}:00`;
 
-    if (taskDraft.reminderEnabled && !isFutureDateTime(taskDate, taskTime)) {
-      setWorkspaceMessage("Choose a future reminder time for this task.");
+  if (taskDraft.reminderEnabled && !isFutureDateTime(taskDate, taskTime)) {
+    setWorkspaceMessage("Choose a future reminder time for this task.");
+    return;
+  }
+
+  const previousTasks = standaloneTasks;
+  const previousEvents = events;
+  const editingTask = composerKind === "task" && Boolean(editingId);
+
+  setComposerSubmitting(true);
+  markWorkspaceMutation();
+
+  try {
+    if (editingTask && editingId) {
+      await apiJson(`/api/tasks/${editingId}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          title,
+          eventId: eventId ?? null,
+          dueDate,
+          completed: taskDraft.completed,
+        }),
+      });
+
+      if (taskDraft.reminderEnabled) {
+        await apiJson(`/api/tasks/${editingId}/reminder`, {
+          method: "PUT",
+          body: JSON.stringify({
+            title: `Task reminder: ${title}`,
+            remindAt: dueDate,
+          }),
+        });
+      } else {
+        await apiJson(`/api/tasks/${editingId}/reminder`, {
+          method: "DELETE",
+        });
+      }
+
+      await refreshSchedule("Task updated.");
+      setEditingId(null);
+      setComposerOpen(false);
+      setActiveTab("tasks");
       return;
     }
 
@@ -2703,12 +2843,6 @@ function hidePendingRemovedShareIds(items: CalendarEvent[]) {
       notificationSentAt: null,
     };
 
-    const previousTasks = standaloneTasks;
-    const previousEvents = events;
-
-    setComposerSubmitting(true);
-    markWorkspaceMutation();
-
     if (eventId) {
       setEvents((current) =>
         current.map((calendarEvent) =>
@@ -2727,49 +2861,49 @@ function hidePendingRemovedShareIds(items: CalendarEvent[]) {
       setStandaloneTasks((current) => [optimisticTask, ...current]);
     }
 
-    try {
-      const payload = await apiJson<{ task: DbTask }>("/api/tasks", {
+    const payload = await apiJson<{ task: DbTask }>("/api/tasks", {
+      method: "POST",
+      body: JSON.stringify({
+        title,
+        eventId,
+        dueDate,
+      }),
+    });
+
+    if (taskDraft.reminderEnabled) {
+      await apiJson("/api/reminders", {
         method: "POST",
         body: JSON.stringify({
-          title,
-          eventId,
-          dueDate,
+          taskId: payload.task.id,
+          title: `Task reminder: ${title}`,
+          remindAt: dueDate,
         }),
       });
-
-      if (taskDraft.reminderEnabled) {
-        await apiJson("/api/reminders", {
-          method: "POST",
-          body: JSON.stringify({
-            taskId: payload.task.id,
-            title: `Task reminder: ${title}`,
-            remindAt: dueDate,
-          }),
-        });
-      }
-
-      await refreshSchedule("Task created.");
-
-      setTaskDraft({
-        title: "",
-        reminderEnabled: false,
-        reminderDate: toDateKey(selectedDate),
-        reminderTime: currentTimeValue(),
-        eventId: "none",
-      });
-
-      setComposerOpen(false);
-      setActiveTab("tasks");
-    } catch (error) {
-      setStandaloneTasks(previousTasks);
-      setEvents(previousEvents);
-      setWorkspaceMessage(
-        error instanceof Error ? error.message : "Could not create task.",
-      );
-    } finally {
-      setComposerSubmitting(false);
     }
+
+    await refreshSchedule("Task created.");
+
+    setTaskDraft({
+      title: "",
+      reminderEnabled: false,
+      reminderDate: toDateKey(selectedDate),
+      reminderTime: currentTimeValue(),
+      eventId: "none",
+      completed: false,
+    });
+
+    setComposerOpen(false);
+    setActiveTab("tasks");
+  } catch (error) {
+    setStandaloneTasks(previousTasks);
+    setEvents(previousEvents);
+    setWorkspaceMessage(
+      error instanceof Error ? error.message : "Could not save task.",
+    );
+  } finally {
+    setComposerSubmitting(false);
   }
+}
 
   function canShareEventFromWorkspace(event: CalendarEvent) {
     if (event.sharedPreviewRole) return false;
@@ -3293,10 +3427,10 @@ await refreshSchedule("Shared event removed from your calendar.");
     markBusy(action, true);
     try {
       await apiJson(`/api/tasks/${taskId}`, {
-        method: "PATCH",
-        body: JSON.stringify({ completed: !task.done }),
-      });
-      setWorkspaceMessage("Task updated.");
+  method: "PATCH",
+  body: JSON.stringify({ completed: !task.done }),
+});
+await refreshSchedule("Task updated.");
     } catch (error) {
       setEvents(previousEvents);
       setStandaloneTasks(previousTasks);
@@ -3308,51 +3442,46 @@ await refreshSchedule("Shared event removed from your calendar.");
     }
   }
 
-  async function editTaskTitle(taskId: string, currentTitle: string) {
-    const nextTitle = window.prompt("Edit task title", currentTitle)?.trim();
+ function openEditTask(taskId: string) {
+  if (composerSubmitting || isBusy(`task:${taskId}`)) return;
 
-    if (!nextTitle || nextTitle === currentTitle) return;
+  const linkedEvent = events.find((event) =>
+    event.tasks.some((task) => task.id === taskId),
+  );
 
-    const action = `task:${taskId}:edit-title`;
-    if (isBusy(action)) return;
+  const linkedTask = linkedEvent?.tasks.find((task) => task.id === taskId);
+  const standaloneTask = standaloneTasks.find((task) => task.id === taskId);
 
-    const previousEvents = events;
-    const previousTasks = standaloneTasks;
+  const task = linkedTask ?? standaloneTask;
 
-    setStandaloneTasks((current) =>
-      current.map((task) =>
-        task.id === taskId ? { ...task, title: nextTitle } : task,
-      ),
-    );
+  if (!task) return;
 
-    setEvents((current) =>
-      current.map((event) => ({
-        ...event,
-        tasks: event.tasks.map((task) =>
-          task.id === taskId ? { ...task, title: nextTitle } : task,
-        ),
-      })),
-    );
+  const taskDate =
+    standaloneTask?.reminderDate ??
+    standaloneTask?.date ??
+    linkedEvent?.date ??
+    toDateKey(selectedDate);
 
-    markBusy(action, true);
+  const taskTime =
+    standaloneTask?.reminderTime ??
+    standaloneTask?.time ??
+    (linkedEvent?.time && linkedEvent.time !== "All day"
+      ? linkedEvent.time
+      : currentTimeValue());
 
-    try {
-      await apiJson(`/api/tasks/${taskId}`, {
-        method: "PATCH",
-        body: JSON.stringify({ title: nextTitle }),
-      });
-
-      setWorkspaceMessage("Task renamed.");
-    } catch (error) {
-      setEvents(previousEvents);
-      setStandaloneTasks(previousTasks);
-      setWorkspaceMessage(
-        error instanceof Error ? error.message : "Could not rename task.",
-      );
-    } finally {
-      markBusy(action, false);
-    }
-  }
+  setEditingId(taskId);
+  setComposerKind("task");
+  setTaskDraft({
+    title: task.title,
+    reminderEnabled: Boolean(standaloneTask?.reminderDate && standaloneTask?.reminderTime),
+    reminderDate: taskDate,
+    reminderTime: taskTime,
+    eventId: standaloneTask?.eventId ?? linkedEvent?.id ?? "none",
+    completed: task.done,
+  });
+  setSelectedTaskIds([]);
+  setComposerOpen(true);
+}
 
   async function createTaskForEvent(eventId: string) {
     const action = `event:${eventId}:create-task`;
@@ -3375,27 +3504,11 @@ await refreshSchedule("Shared event removed from your calendar.");
     setEventTaskDrafts((current) => ({ ...current, [eventId]: "" }));
     markBusy(action, true);
     try {
-      const payload = await apiJson<{ task: DbTask }>("/api/tasks", {
-        method: "POST",
-        body: JSON.stringify({ eventId, title }),
-      });
-      setEvents((current) =>
-        current.map((event) =>
-          event.id === eventId
-            ? {
-                ...event,
-                tasks: [
-                  ...event.tasks.filter((task) => task.id !== tempId),
-                  {
-                    id: payload.task.id,
-                    title: payload.task.title,
-                    done: payload.task.completed,
-                  },
-                ],
-              }
-            : event,
-        ),
-      );
+      await apiJson<{ task: DbTask }>("/api/tasks", {
+  method: "POST",
+  body: JSON.stringify({ eventId, title }),
+});
+await refreshSchedule("Task created.");
     } catch (error) {
       setEvents(previousEvents);
       setWorkspaceMessage(
@@ -3520,7 +3633,7 @@ await refreshSchedule("Shared event removed from your calendar.");
     markBusy(action, true);
     try {
       await apiJson(`/api/tasks/${taskId}`, { method: "DELETE" });
-      setWorkspaceMessage("Task deleted.");
+await refreshSchedule("Task deleted.");
     } catch (error) {
       setEvents(previousEvents);
       setStandaloneTasks(previousTasks);
@@ -4610,7 +4723,7 @@ async function removeEventShare(eventId: string, shareId: string) {
                   onToggleTask={toggleTask}
                   onUnlinkTask={unlinkTaskFromEvent}
                   onDeleteTask={deleteTask}
-                  onEditTask={editTaskTitle}
+                  onEditTask={openEditTask}
                   onTaskDraftChange={(eventId: string, value: string) =>
                     setEventTaskDrafts((current) => ({
                       ...current,
@@ -4637,7 +4750,7 @@ async function removeEventShare(eventId: string, shareId: string) {
                 title={taskViewTitle}
                 onToggle={toggleTask}
                 onDelete={deleteTask}
-                onEdit={editTaskTitle}
+                onEdit={openEditTask}
               />
             )}
             {activeTab === "alerts" && (
@@ -4806,7 +4919,11 @@ async function removeEventShare(eventId: string, shareId: string) {
           reminderDraft={eventReminderDraft}
           setReminderDraft={setEventReminderDraft}
           onChange={setDraft}
-          onClose={() => setComposerOpen(false)}
+          onClose={() => {
+  setComposerOpen(false);
+  setEditingId(null);
+}}
+
           onSubmit={saveEvent}
           onSubmitTask={saveTask}
           onAddTag={() => setTagModalOpen(true)}
@@ -4885,6 +5002,7 @@ async function removeEventShare(eventId: string, shareId: string) {
           onRestore={restoreHiddenReminderAlert}
           onRestoreAll={restoreAllHiddenReminderAlerts}
           onClose={() => setRestoreRemindersOpen(false)}
+          onDelete={deleteHiddenReminderPermanently}
         />
       )}
       <ToastViewport toasts={toasts} onClose={removeToast} />
@@ -7512,9 +7630,15 @@ function EventComposer({
         className="max-h-[calc(100dvh-24px)] w-full max-w-md overflow-y-auto rounded-[32px] border border-white/70 bg-white/88 p-4 shadow-2xl shadow-black/20 backdrop-blur-2xl"
       >
         <ModalHeader
-          title={editing ? "Edit event" : "Create"}
-          onClose={onClose}
-        />
+  title={
+    editing
+      ? kind === "task"
+        ? "Edit task"
+        : "Edit event"
+      : "Create"
+  }
+  onClose={onClose}
+/>
         {!editing && (
           <div className="mb-4 grid grid-cols-2 rounded-full bg-[#f2f2f7] p-1 text-sm font-bold">
             {(["event", "task"] as ComposerKind[]).map((item) => (
@@ -7534,7 +7658,7 @@ function EventComposer({
             ))}
           </div>
         )}
-        {kind === "task" && !editing ? (
+        {kind === "task" ? (
           <div className="space-y-3">
             <FieldLabel label="Task name" helper="What do you need to do?">
               <input
@@ -7547,6 +7671,26 @@ function EventComposer({
                 required
               />
             </FieldLabel>
+            <label className="flex items-center justify-between rounded-[22px] border border-black/[0.06] bg-white px-4 py-3 text-sm font-black text-[#1d1d1f] shadow-sm shadow-black/[0.04] ring-1 ring-white/80 transition dark:border-white/10 dark:bg-white/10 dark:text-white dark:ring-white/10">
+  <span className="flex flex-col block text-sm font-black text-[#1d1d1f]">
+    <span>Completed</span>
+    <span className="text-[11px] font-bold text-[#8e8e93] dark:text-zinc-400">
+      Mark this task as done
+    </span>
+  </span>
+
+  <input
+    type="checkbox"
+    checked={taskDraft.completed}
+    onChange={(event) =>
+      setTaskDraft({
+        ...taskDraft,
+        completed: event.target.checked,
+      })
+    }
+    className="size-5 rounded-md border border-black/20 bg-white accent-[#34c759] dark:border-white/20 dark:bg-white/10"
+  />
+</label>
             <label className="flex items-center justify-between gap-3 rounded-3xl border border-white/70 bg-white/70 p-4 shadow-sm shadow-black/5">
               <span>
                 <span className="block text-sm font-black text-[#1d1d1f]">
@@ -8863,11 +9007,13 @@ function RestoreReminderModal({
   onRestore,
   onRestoreAll,
   onClose,
+  onDelete,
 }: {
   reminders: RescheduleReminder[];
   onRestore: (alertId: string) => void;
   onRestoreAll: () => void;
   onClose: () => void;
+  onDelete: (reminderId: string) => void;
 }) {
   return (
     <ModalShell>
@@ -8914,6 +9060,13 @@ function RestoreReminderModal({
                   >
                     Restore
                   </button>
+                  <button
+  type="button"
+  onClick={() => onDelete(reminder.id)}
+  className="rounded-full bg-[#ffe8e6] px-3 py-1.5 text-xs font-black text-[#ff3b30] transition hover:bg-[#ffd6d1] active:scale-95 dark:bg-rose-500/15 dark:text-rose-200 dark:hover:bg-rose-500/25"
+>
+  Delete
+</button>
                 </div>
               ))}
             </div>

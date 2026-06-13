@@ -1,6 +1,5 @@
 import {
   ApiError,
-  booleanValue,
   dateValue,
   fail,
   ok,
@@ -9,18 +8,6 @@ import {
   stringValue,
 } from "@/lib/api-helpers";
 import { prisma } from "@/lib/prisma";
-
-const priorities = ["low", "normal", "high", "urgent"] as const;
-
-function priorityValue(value: unknown) {
-  if (value === undefined) return undefined;
-
-  if (typeof value !== "string" || !priorities.includes(value as never)) {
-    throw new ApiError("priority must be low, normal, high, or urgent.");
-  }
-
-  return value as (typeof priorities)[number];
-}
 
 async function ensureTaskWriteAccess(
   user: { id: string; email: string },
@@ -62,10 +49,6 @@ async function ensureTaskWriteAccess(
         },
       ],
     },
-    include: {
-      event: true,
-      reminders: true,
-    },
   });
 
   if (!task) {
@@ -75,7 +58,7 @@ async function ensureTaskWriteAccess(
   return task;
 }
 
-export async function PATCH(
+export async function PUT(
   request: Request,
   context: { params: Promise<{ id: string }> },
 ) {
@@ -86,26 +69,34 @@ export async function PATCH(
 
     await ensureTaskWriteAccess(user, id);
 
-    const rawEventId = body.eventId === null ? null : stringValue(body.eventId);
-    const eventId = rawEventId === "none" ? null : rawEventId;
+    const remindAt = dateValue(body.remindAt, "remindAt");
+    const title = stringValue(body.title) || "Task reminder";
 
-    const task = await prisma.task.update({
-      where: { id },
-      data: {
-        eventId,
-        title: stringValue(body.title),
-        description: stringValue(body.description),
-        completed: booleanValue(body.completed),
-        dueDate: dateValue(body.dueDate, "dueDate"),
-        priority: priorityValue(body.priority),
-      },
-      include: {
-        event: true,
-        reminders: true,
-      },
+    if (!remindAt) throw new ApiError("remindAt is required.");
+    if (remindAt.getTime() <= Date.now()) {
+      throw new ApiError("Reminder time must be in the future.");
+    }
+
+    const reminder = await prisma.$transaction(async (tx) => {
+      await tx.reminder.deleteMany({
+        where: {
+          taskId: id,
+          completed: false,
+        },
+      });
+
+      return tx.reminder.create({
+        data: {
+          userId: user.id,
+          taskId: id,
+          title,
+          remindAt,
+          completed: false,
+        },
+      });
     });
 
-    return ok({ task });
+    return ok({ reminder });
   } catch (error) {
     return fail(error);
   }
@@ -121,9 +112,14 @@ export async function DELETE(
 
     await ensureTaskWriteAccess(user, id);
 
-    const task = await prisma.task.delete({ where: { id } });
+    await prisma.reminder.deleteMany({
+      where: {
+        taskId: id,
+        completed: false,
+      },
+    });
 
-    return ok({ task });
+    return ok({ removed: true, taskId: id });
   } catch (error) {
     return fail(error);
   }
