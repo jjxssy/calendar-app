@@ -20,6 +20,23 @@ const priorities = ["low", "normal", "high", "urgent"] as const;
 const statuses = ["scheduled", "completed", "cancelled", "archived"] as const;
 const recurrences = ["none", "daily", "weekly", "monthly", "yearly"] as const;
 
+const eventShareInclude = {
+  where: {
+    status: {
+      not: "revoked" as const,
+    },
+  },
+  include: {
+    user: {
+      select: {
+        id: true,
+        name: true,
+        email: true,
+      },
+    },
+  },
+};
+
 function priorityValue(value: unknown) {
   if (value === undefined) return undefined;
 
@@ -53,13 +70,11 @@ function recurrenceValue(value: unknown) {
 function accessibleEventWhere(user: { id: string; email: string }) {
   return {
     OR: [
-      // Current correct ownership
       { userId: user.id },
       { calendar: { ownerId: user.id } },
       { calendar: { members: { some: { userId: user.id, status: "accepted" as const } } } },
       { shares: { some: { userId: user.id, status: "accepted" as const } } },
 
-      // Legacy / repaired ownership by email
       { user: { email: user.email } },
       { calendar: { owner: { email: user.email } } },
       { calendar: { members: { some: { email: user.email, status: "accepted" as const } } } },
@@ -123,7 +138,7 @@ export async function GET(request: Request) {
         category: true,
         tasks: true,
         reminders: true,
-        shares: true,
+        shares: eventShareInclude,
       },
       orderBy: [{ pinned: "desc" }, { startDate: "asc" }],
     });
@@ -208,13 +223,7 @@ export async function POST(request: Request) {
           category: true,
           tasks: true,
           reminders: true,
-          shares: {
-  where: {
-    status: {
-      not: "revoked",
-    },
-  },
-},
+          shares: eventShareInclude,
         },
       });
 

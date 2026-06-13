@@ -270,11 +270,17 @@ type DbEvent = {
   tasks: DbTask[];
   reminders: DbReminder[];
   shares?: Array<{
+  id: string;
+  email: string;
+  displayName?: string | null;
+  role: "editor" | "viewer";
+  status: "pending" | "accepted" | "declined" | "revoked";
+  user?: {
     id: string;
+    name?: string | null;
     email: string;
-    role: "editor" | "viewer";
-    status: "pending" | "accepted" | "declined";
-  }>;
+  } | null;
+}>;
 };
 
 type DbNotificationPreferences = {
@@ -629,14 +635,14 @@ function mapEvent(event: DbEvent): SharedPreviewCalendarEvent {
       event.calendar,
     ),
     sharedWith: event.shares
-  ?.filter((share) => String(share.status) !== "revoked")
+  ?.filter((share) => share.status !== "revoked")
   .map((share) => ({
     id: share.id,
     email: share.email,
+    displayName: share.user?.name ?? undefined,
     role: share.role,
     status: share.status,
   })),
-
     activity: [],
     rescheduleReminders: event.reminders.map(mapReminder),
     tasks: event.tasks.map((task) => ({
@@ -902,6 +908,11 @@ function canManageEvent(event: CalendarEvent) {
   return sharedEvent.sharedPreviewRole !== "viewer";
 }
 
+function canUseOwnerEventActions(event: CalendarEvent) {
+  const sharedEvent = event as SharedPreviewCalendarEvent;
+  return !sharedEvent.sharedPreviewRole;
+}
+
 function canShareEvent(event: CalendarEvent) {
   const sharedEvent = event as SharedPreviewCalendarEvent;
   return !sharedEvent.sharedPreviewRole;
@@ -948,6 +959,7 @@ export default function CalendarDashboard() {
   const workspaceMutationVersion = useRef(0);
   const workspaceLoadVersion = useRef(0);
   const visitedSettingsRef = useRef(false);
+  const pendingRemovedShareIdsRef = useRef<Set<string>>(new Set());
   const notifiedInvitationIdsRef = useRef<Set<string>>(new Set());
   const previousTabRef = useRef<AppTab>("calendar");
   const [session, setSession] = useState<AppSession | null>(() =>
@@ -1072,6 +1084,24 @@ export default function CalendarDashboard() {
   const [isMobileDevice, setIsMobileDevice] = useState(false);
   useEffect(() => {
     if (!isAuthed) return;
+
+function hidePendingRemovedShareIds(items: CalendarEvent[]) {
+  const pending = pendingRemovedShareIdsRef.current;
+
+  if (pending.size === 0) return items;
+
+  return items
+    .filter((event) => {
+      const sharedPreview = event as SharedPreviewCalendarEvent;
+      return !sharedPreview.sharedById || !pending.has(sharedPreview.sharedById);
+    })
+    .map((event) => ({
+      ...event,
+      sharedWith: (event.sharedWith ?? []).filter(
+        (share) => !pending.has(share.id),
+      ),
+    }));
+}
 
     const refreshWhenActive = () => {
       if (document.visibilityState === "visible") {
@@ -2030,8 +2060,7 @@ export default function CalendarDashboard() {
       setSession(nextSession);
       setCalendars(mappedCalendars);
       setTags(loadedCategories.map(mapCategory));
-      const mappedEvents = eventPayload.events.map(mapEvent);
-
+      const mappedEvents = hidePendingRemovedShareIds(eventPayload.events.map(mapEvent));
       setEvents(mappedEvents);
 
       if (!workspaceReady) {
@@ -2085,6 +2114,24 @@ export default function CalendarDashboard() {
       if (showLoading) setWorkspaceLoading(false);
     }
   }
+
+  function hidePendingRemovedShareIds(items: CalendarEvent[]) {
+  const pending = pendingRemovedShareIdsRef.current;
+
+  if (pending.size === 0) return items;
+
+  return items
+    .filter((event) => {
+      const sharedPreview = event as SharedPreviewCalendarEvent;
+      return !sharedPreview.sharedById || !pending.has(sharedPreview.sharedById);
+    })
+    .map((event) => ({
+      ...event,
+      sharedWith: (event.sharedWith ?? []).filter(
+        (share) => !pending.has(share.id),
+      ),
+    }));
+}
 
   async function refreshSchedule(message?: string) {
     if (!session) return;
@@ -4120,6 +4167,12 @@ await refreshSchedule("Shared event removed from your calendar.");
         share: {
           id: string;
           email: string;
+          displayName?: string | null;
+          user?: {
+            id: string;
+            name?: string | null;
+            email: string;
+          } | null;
           role: "editor" | "viewer";
           status: "pending" | "accepted" | "declined" | "revoked";
         };
@@ -4140,6 +4193,10 @@ await refreshSchedule("Shared event removed from your calendar.");
                   {
                     id: payload.share.id,
                     email: payload.share.email,
+                    displayName:
+                      payload.share.displayName ??
+                      payload.share.user?.name ??
+                      undefined,
                     role: payload.share.role,
                     status:
                       payload.share.status === "revoked"
@@ -4274,7 +4331,7 @@ await refreshSchedule("Shared event removed from your calendar.");
     }
   }
 
-  async function removeEventShare(eventId: string, shareId: string) {
+async function removeEventShare(eventId: string, shareId: string) {
   const action = `event:${eventId}:share:${shareId}:remove`;
   if (isBusy(action)) return;
 
@@ -4282,22 +4339,26 @@ await refreshSchedule("Shared event removed from your calendar.");
 
   const previousEvents = events;
 
+  pendingRemovedShareIdsRef.current.add(shareId);
+
   setEvents((current) =>
-    current
-      .filter((event) => {
-        const sharedPreview = event as SharedPreviewCalendarEvent;
-        return sharedPreview.sharedById !== shareId;
-      })
-      .map((event) =>
-        event.id === eventId
-          ? {
-              ...event,
-              sharedWith: (event.sharedWith ?? []).filter(
-                (share) => share.id !== shareId,
-              ),
-            }
-          : event,
-      ),
+    hidePendingRemovedShareIds(
+      current
+        .filter((event) => {
+          const sharedPreview = event as SharedPreviewCalendarEvent;
+          return sharedPreview.sharedById !== shareId;
+        })
+        .map((event) =>
+          event.id === eventId
+            ? {
+                ...event,
+                sharedWith: (event.sharedWith ?? []).filter(
+                  (share) => share.id !== shareId,
+                ),
+              }
+            : event,
+        ),
+    ),
   );
 
   markBusy(action, true);
@@ -4307,8 +4368,14 @@ await refreshSchedule("Shared event removed from your calendar.");
       method: "DELETE",
     });
 
-    await refreshSchedule("Recipient removed.");
+    setWorkspaceMessage("Recipient removed.");
+
+    window.setTimeout(() => {
+      pendingRemovedShareIdsRef.current.delete(shareId);
+      void refreshSchedule();
+    }, 1200);
   } catch (error) {
+    pendingRemovedShareIdsRef.current.delete(shareId);
     setEvents(previousEvents);
     setWorkspaceMessage(
       error instanceof Error ? error.message : "Could not remove recipient.",
@@ -5381,17 +5448,20 @@ function EventCard({
   const manageable = canManageEvent(event);
   const shareable = canShare;
   const sharedPreview = event as SharedPreviewCalendarEvent;
+  function displayNameFromEmail(email: string) {
+  const name = email.split("@")[0] ?? email;
 
+  return name
+    .replace(/[._-]+/g, " ")
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
   return (
     <article
-      className={[
-        "event-card-shell rounded-[28px] p-4 shadow-xl shadow-black/5 ring-1 ring-white/70 transition",
-        cancelled ? "opacity-60 grayscale-[0.25]" : "",
-      ].join(" ")}
-      style={{
-  background: `linear-gradient(135deg, ${tag.color}14, rgba(255,255,255,.96))`,
-}}
-    >
+  className={[
+    "event-card-shell rounded-[30px] border border-black/[0.06] bg-white/90 p-4 shadow-[0_16px_42px_rgba(15,23,42,0.08)] ring-1 ring-white/80 backdrop-blur-2xl transition dark:border-white/10 dark:bg-[#242431]/88 dark:shadow-[0_18px_48px_rgba(0,0,0,0.28)] dark:ring-white/10",
+    cancelled ? "opacity-60 grayscale-[0.25]" : "",
+  ].join(" ")}
+>
       <div className="flex gap-3">
         <div
           className="mt-1 h-14 w-1.5 rounded-full"
@@ -5432,62 +5502,71 @@ function EventCard({
                 </p>
               )}
               {sharedPreview.sharedPreviewRole ? (
-                <div className="mt-2 flex flex-wrap items-center gap-2">
-                  <span
-                    className={[
-                      "rounded-full px-2.5 py-1 text-[0.7rem] font-black shadow-sm",
-                      sharedPreview.sharedPreviewRole === "viewer"
-                        ? "bg-zinc-200 text-zinc-800 dark:bg-zinc-700 dark:text-zinc-100"
-                        : "bg-emerald-200 text-emerald-900 dark:bg-emerald-500/25 dark:text-emerald-100",
-                    ].join(" ")}
-                  >
-                    {sharedPreview.sharedPreviewRole === "viewer"
-                      ? "View only"
-                      : "Can edit"}
-                  </span>
+  <div className="mt-2 flex flex-wrap items-center gap-2">
+    <span className="inline-flex items-center gap-1.5 rounded-full bg-[#f4f4f7] px-3 py-1 text-[0.72rem] font-black text-[#636366] ring-1 ring-black/5 dark:bg-white/10 dark:text-zinc-200 dark:ring-white/10">
+      <Share2 size={13} />
+      Shared
+    </span>
 
-                  <button
-                    type="button"
-                    onClick={onRemoveSharedEvent}
-                    className="rounded-full bg-rose-100 px-3 py-1 text-[0.7rem] font-black text-rose-700 shadow-sm transition active:scale-95 hover:bg-rose-200 dark:bg-rose-500/15 dark:text-rose-100 dark:hover:bg-rose-500/25"
-                  >
-                    Remove from my calendar
-                  </button>
-                </div>
-              ) : null}
+    <span
+      className={[
+        "rounded-full px-3 py-1 text-[0.72rem] font-black ring-1",
+        sharedPreview.sharedPreviewRole === "viewer"
+          ? "bg-[#eef4ff] text-[#007aff] ring-[#007aff]/10 dark:bg-[#007aff]/15 dark:text-[#bfdbfe] dark:ring-[#007aff]/20"
+          : "bg-[#ecfdf3] text-[#16823a] ring-[#34c759]/10 dark:bg-emerald-500/15 dark:text-emerald-200 dark:ring-emerald-500/20",
+      ].join(" ")}
+    >
+      {sharedPreview.sharedPreviewRole === "viewer" ? "View only" : "Can edit"}
+    </span>
+
+    <button
+      type="button"
+      onClick={onRemoveSharedEvent}
+      className="rounded-full bg-white/80 px-3 py-1 text-[0.72rem] font-black text-[#636366] ring-1 ring-black/5 transition hover:bg-[#fff4f3] hover:text-[#ff3b30] active:scale-95 dark:bg-white/10 dark:text-zinc-200 dark:ring-white/10 dark:hover:bg-rose-500/15 dark:hover:text-rose-200"
+    >
+      Remove
+    </button>
+  </div>
+) : null}
             </div>
             {manageable && (
-              <div className="flex shrink-0 gap-1">
-                {cancelled ? (
-                  <IconButton
-                    label={`Undo cancellation for ${event.title}`}
-                    onClick={onUndoCancel}
-                  >
-                    <RotateCcw size={15} />
-                  </IconButton>
-                ) : (
-                  <>
-                    <IconButton label={`Edit ${event.title}`} onClick={onEdit}>
-                      <Edit3 size={15} />
-                    </IconButton>
-                    <IconButton
-                      label={`Cancel ${event.title}`}
-                      onClick={onCancel}
-                      danger
-                    >
-                      <CircleX size={16} />
-                    </IconButton>
-                  </>
-                )}
-                <IconButton
-                  label={`Delete ${event.title}`}
-                  onClick={onDelete}
-                  danger
-                >
-                  <Trash2 size={15} />
-                </IconButton>
-              </div>
-            )}
+  <div className="flex shrink-0 gap-1">
+    {cancelled ? (
+      canUseOwnerEventActions(event) ? (
+        <IconButton
+          label={`Undo cancellation for ${event.title}`}
+          onClick={onUndoCancel}
+        >
+          <RotateCcw size={15} />
+        </IconButton>
+      ) : null
+    ) : (
+      <IconButton label={`Edit ${event.title}`} onClick={onEdit}>
+        <Edit3 size={15} />
+      </IconButton>
+    )}
+
+    {!cancelled && canUseOwnerEventActions(event) && (
+      <IconButton
+        label={`Cancel ${event.title}`}
+        onClick={onCancel}
+        danger
+      >
+        <CircleX size={16} />
+      </IconButton>
+    )}
+
+    {canUseOwnerEventActions(event) && (
+      <IconButton
+        label={`Delete ${event.title}`}
+        onClick={onDelete}
+        danger
+      >
+        <Trash2 size={15} />
+      </IconButton>
+    )}
+  </div>
+)}
           </div>
           <div className="mt-3 flex flex-wrap gap-2 text-sm font-semibold text-[#636366]">
             <Chip
@@ -5625,12 +5704,12 @@ function EventCard({
             )}
           </div>
           {shareable && (
-            <div className="mt-3 rounded-3xl border border-black/10 bg-white/95 p-3 shadow-md shadow-black/10 backdrop-blur dark:border-white/10 dark:bg-white/10">
+            <div className="mt-3 rounded-[28px] border border-black/[0.06] bg-white/82 p-3 shadow-sm shadow-black/5 ring-1 ring-white/80 backdrop-blur-xl dark:border-white/10 dark:bg-white/[0.07] dark:ring-white/10">
               <div className="mb-2 flex items-center justify-between gap-2">
-                <p className="text-sm font-black text-[#3a3a3c] drop-shadow-sm dark:text-white">
+                <p className="text-sm font-black text-[#1d1d1f] dark:text-white">
   Specific event sharing
 </p>
-                <span className="rounded-full bg-[#eef4ff] px-2.5 py-1 text-[11px] font-black text-[#007aff] dark:bg-[#007aff]/20 dark:text-[#8ec5ff]">
+               <span className="rounded-full bg-[#eef4ff] px-2.5 py-1 text-[11px] font-black text-[#007aff] dark:bg-[#007aff]/15 dark:text-[#bfdbfe]">
   Invite only
 </span>
               </div>
@@ -5640,13 +5719,13 @@ function EventCard({
                   onChange={(inputEvent) =>
                     onShareDraftChange(inputEvent.target.value)
                   }
-                  className="h-10 min-w-0 rounded-2xl border border-black/5 bg-white px-3 text-sm font-bold text-[#1d1d1f] shadow-inner shadow-black/5 outline-none placeholder:text-[#9b9baa] focus:border-[#007aff]/40 focus:ring-4 focus:ring-[#007aff]/10 dark:border-white/10 dark:bg-white/10 dark:text-white dark:placeholder:text-zinc-400"
+                  className="h-10 min-w-0 rounded-2xl border border-black/[0.055] bg-white/90 px-3 text-sm font-bold text-[#1d1d1f] shadow-inner shadow-black/[0.03] outline-none placeholder:text-[#9b9baa] focus:border-[#007aff]/35 focus:ring-4 focus:ring-[#007aff]/10 dark:border-white/10 dark:bg-white/10 dark:text-white dark:placeholder:text-zinc-400"
                   placeholder="person@example.com"
                 />
                 <button
                   type="button"
                   onClick={onShare}
-                  className="grid h-10 place-items-center rounded-2xl bg-[#af52de] px-4 text-sm font-bold text-white transition active:scale-95"
+                  className="grid h-10 place-items-center rounded-2xl bg-[#af52de] px-4 text-sm font-black text-white shadow-sm shadow-[#af52de]/20 transition hover:bg-[#9b45cf] active:scale-95"
                   aria-label={`Prepare share invite for ${event.title}`}
                 >
                   <Share2 size={15} />
@@ -5655,72 +5734,75 @@ function EventCard({
               {(event.sharedWith ?? []).length > 0 && (
                 <div className="mt-3 space-y-2">
                   {(event.sharedWith ?? []).map((share) => (
-                    <div
-                      key={share.id}
-                      className="grid gap-2 rounded-2xl border border-black/5 bg-white/90 p-2 shadow-sm shadow-black/5 sm:grid-cols-[1fr_auto_auto] dark:border-white/10 dark:bg-white/10"
-                    >
-                      <div className="min-w-0">
-                        <p className="truncate text-xs font-black text-[#1d1d1f] dark:text-white">
-  {share.email}
-</p>
-                        <p
-                          className={[
-                            "mt-1 text-[11px] font-black uppercase tracking-[0.08em]",
-                            share.status === "accepted"
-                              ? "text-[#1f8f45]"
-                              : share.status === "declined"
-                                ? "text-[#ff3b30]"
-                                : "text-[#8e8e93]",
-                          ].join(" ")}
-                        >
-                          {share.status}
-                        </p>
-                      </div>
-                      <div className="flex gap-1">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            console.log("VIEWER BUTTON CLICKED DIRECTLY", {
-                              eventId: event.id,
-                              shareId: share.id,
-                              currentRole: share.role,
-                            });
+                   <div
+  key={share.id}
+  className="rounded-[22px] border border-black/[0.055] bg-white/78 p-3 shadow-sm shadow-black/[0.04] ring-1 ring-white/80 backdrop-blur-xl dark:border-white/10 dark:bg-white/[0.07] dark:ring-white/10"
+>
+  <div className="flex min-w-0 items-start justify-between gap-3">
+    <div className="min-w-0">
+      <p className="truncate text-sm font-black text-[#1d1d1f] dark:text-white">
+        {share.displayName || share.email}
+      </p>
 
-                            onUpdateShareRole(event.id, share.id, "viewer");
-                          }}
-                          className={[
-                            "h-9 rounded-2xl px-3 text-xs font-black transition active:scale-95",
-                            share.role === "viewer"
-                              ? "bg-[#1d1d1f] text-white shadow-sm dark:bg-white dark:text-[#1d1d1f]"
-                              : "bg-[#f2f2f7] text-[#3a3a3c] hover:bg-[#e5e5ea] dark:bg-white/10 dark:text-zinc-200 dark:hover:bg-white/15"
-                          ].join(" ")}
-                        >
-                          Viewer
-                        </button>
+      <p className="mt-0.5 truncate text-xs font-bold text-[#6b6a73] dark:text-zinc-300">
+        {share.email}
+      </p>
+    </div>
 
-                        <button
-                          type="button"
-                          onClick={() =>
-                            onUpdateShareRole(event.id, share.id, "editor")
-                          }
-                          className={[
-                            "h-9 rounded-2xl px-3 text-xs font-black transition active:scale-95",
-                            share.role === "editor"
-                              ? "bg-[#1d1d1f] text-white shadow-sm dark:bg-white dark:text-[#1d1d1f]"
-                              : "bg-white text-[#636366]",
-                          ].join(" ")}
-                        >
-                          Editor
-                        </button>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => onRemoveShare(event.id, share.id)}
-                        className="h-9 rounded-2xl bg-[#ffe8e6] px-3 text-xs font-black text-[#c8291f] shadow-sm transition hover:bg-[#ffd6d1] active:scale-95 dark:bg-[#ff3b30]/20 dark:text-[#ffb4ad] dark:hover:bg-[#ff3b30]/30"
-                      >
-                        Remove
-                      </button>
-                    </div>
+    <span
+      className={[
+        "shrink-0 rounded-full px-2.5 py-1 text-[0.62rem] font-black uppercase tracking-[0.12em]",
+        share.status === "accepted"
+          ? "bg-[#ecfdf3] text-[#16823a] dark:bg-emerald-500/15 dark:text-emerald-200"
+          : share.status === "declined"
+            ? "bg-[#fff4f3] text-[#c8291f] dark:bg-rose-500/15 dark:text-rose-200"
+            : "bg-[#fff8e5] text-[#9a6a00] dark:bg-amber-500/15 dark:text-amber-200",
+      ].join(" ")}
+    >
+      {share.status}
+    </span>
+  </div>
+
+  <div className="mt-3 grid grid-cols-[1fr_1fr_auto] gap-2">
+    <button
+      type="button"
+      onClick={() => onUpdateShareRole(event.id, share.id, "viewer")}
+      disabled={share.role === "viewer"}
+      className={[
+        "h-9 rounded-2xl px-3 text-xs font-black transition active:scale-95 disabled:cursor-default",
+        share.role === "viewer"
+          ? "bg-[#1d1d1f] text-white dark:bg-white dark:text-[#1d1d1f]"
+          : "bg-[#f4f4f7] text-[#3a3a3c] hover:bg-[#e9e9ef] dark:bg-white/10 dark:text-zinc-200 dark:hover:bg-white/15",
+      ].join(" ")}
+    >
+      Viewer
+    </button>
+
+    <button
+      type="button"
+      onClick={() => onUpdateShareRole(event.id, share.id, "editor")}
+      disabled={share.role === "editor"}
+      className={[
+        "h-9 rounded-2xl px-3 text-xs font-black transition active:scale-95 disabled:cursor-default",
+        share.role === "editor"
+          ? "bg-[#1d1d1f] text-white dark:bg-white dark:text-[#1d1d1f]"
+          : "bg-[#f4f4f7] text-[#3a3a3c] hover:bg-[#e9e9ef] dark:bg-white/10 dark:text-zinc-200 dark:hover:bg-white/15",
+      ].join(" ")}
+    >
+      Editor
+    </button>
+
+    <button
+      type="button"
+      onClick={() => onRemoveShare(event.id, share.id)}
+      className="grid size-9 place-items-center rounded-2xl bg-[#fff4f3] text-[#ff3b30] transition hover:bg-[#ffe5e2] active:scale-95 dark:bg-rose-500/15 dark:text-rose-200 dark:hover:bg-rose-500/25"
+      aria-label={`Remove ${share.email}`}
+      title="Remove recipient"
+    >
+      <X size={16} />
+    </button>
+  </div>
+</div>
                   ))}
                 </div>
               )}
@@ -6306,49 +6388,54 @@ function EventInviteCard({
   const taskCount = invitation.event.tasks.length;
 
   return (
-    <article className="rounded-[24px] border border-[#af52de]/20 bg-[#fbf0ff] p-4 shadow-lg shadow-black/5 backdrop-blur-xl">
+    <article className="rounded-[24px] border border-[#af52de]/15 bg-[#fbf7ff] p-4 shadow-sm shadow-[#6d5dfc]/10 backdrop-blur-xl dark:border-white/10 dark:bg-white/10">
       <div className="flex items-start gap-3">
-        <div className="mt-1 grid size-9 place-items-center rounded-2xl bg-white/80 text-[#af52de]">
+        <div className="grid size-9 shrink-0 place-items-center rounded-2xl bg-[#af52de]/12 text-[#af52de] dark:bg-[#af52de]/20 dark:text-[#e9d5ff]">
           <Share2 size={17} />
         </div>
 
         <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <p className="text-base font-black text-[#1d1d1f]">
-              Shared event preview
-            </p>
-            <span className="rounded-full bg-white/80 px-2.5 py-1 text-[11px] font-black uppercase tracking-[0.08em] text-[#af52de]">
-              Preview only
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <p className="text-xs font-black uppercase tracking-[0.16em] text-[#8e8e93] dark:text-zinc-300">
+                Shared event
+              </p>
+
+              <h3 className="mt-1 truncate text-lg font-black text-[#1d1d1f] dark:text-white">
+                {preview.title}
+              </h3>
+
+              <p className="mt-1 text-sm font-bold text-[#636366] dark:text-zinc-300">
+                {preview.date} · {preview.time}
+                {preview.location && preview.location !== "No location"
+                  ? ` · ${preview.location}`
+                  : ""}
+              </p>
+            </div>
+
+            <span className="shrink-0 rounded-full bg-[#eaf4ff] px-2.5 py-1 text-[0.66rem] font-black uppercase tracking-[0.12em] text-[#007aff] dark:bg-[#007aff]/20 dark:text-[#bfdbfe]">
+              {invitation.role === "viewer" ? "Preview" : "Can edit"}
             </span>
           </div>
 
-          <p className="mt-1 text-sm font-black text-[#1d1d1f]">
-            {preview.title}
-          </p>
-
-          <p className="mt-1 text-sm font-semibold text-[#636366]">
-            {preview.date} · {preview.time}
-            {preview.location && preview.location !== "No location"
-              ? ` · ${preview.location}`
-              : ""}
-          </p>
-
           {taskCount > 0 && (
-            <div className="mt-3 rounded-2xl bg-white/65 p-3">
-              <p className="text-xs font-black uppercase tracking-[0.12em] text-[#8e8e93]">
+            <div className="mt-3 rounded-2xl bg-white/70 p-3 dark:bg-white/10">
+              <p className="text-xs font-black uppercase tracking-[0.12em] text-[#8e8e93] dark:text-zinc-300">
                 Included tasks
               </p>
+
               <div className="mt-2 space-y-1">
                 {invitation.event.tasks.slice(0, 3).map((task) => (
                   <p
                     key={task.id}
-                    className="truncate text-sm font-semibold text-[#636366]"
+                    className="truncate text-sm font-semibold text-[#636366] dark:text-zinc-200"
                   >
                     • {task.title}
                   </p>
                 ))}
+
                 {taskCount > 3 && (
-                  <p className="text-xs font-bold text-[#8e8e93]">
+                  <p className="text-xs font-bold text-[#8e8e93] dark:text-zinc-300">
                     +{taskCount - 3} more tasks
                   </p>
                 )}
@@ -6356,43 +6443,38 @@ function EventInviteCard({
             </div>
           )}
 
-          <div className="mt-2">
-            <button
-              type="button"
-              onClick={() =>
-                setOpenShareInfo((current) => ({
-                  ...current,
-                  [invitation.id]: !current[invitation.id],
-                }))
-              }
-              className="rounded-full bg-sky-100 px-2 py-1 text-xs font-semibold text-sky-700 transition hover:bg-sky-200"
-            >
-              {openShareInfo[invitation.id] ? "Hide info" : "Info"}
-            </button>
+          <button
+            type="button"
+            onClick={() =>
+              setOpenShareInfo((current) => ({
+                ...current,
+                [invitation.id]: !current[invitation.id],
+              }))
+            }
+            className="mt-3 rounded-full bg-sky-100 px-3 py-1.5 text-xs font-black text-sky-700 transition hover:bg-sky-200 active:scale-95 dark:bg-sky-500/15 dark:text-sky-200 dark:hover:bg-sky-500/25"
+          >
+            {openShareInfo[invitation.id] ? "Hide info" : "Info"}
+          </button>
 
-            {openShareInfo[invitation.id] ? (
-              <p className="mt-2 rounded-2xl bg-sky-50 px-3 py-2 text-xs font-semibold text-sky-700">
-                Accepting adds this single event only. It does not add the
-                owner&apos;s full calendar.
-              </p>
-            ) : null}
-          </div>
+          {openShareInfo[invitation.id] && (
+            <p className="mt-2 rounded-2xl bg-sky-50 px-3 py-2 text-xs font-semibold leading-5 text-sky-700 dark:bg-sky-500/10 dark:text-sky-200">
+              Accepting adds this single event only. It does not add the
+              owner&apos;s full calendar.
+            </p>
+          )}
         </div>
       </div>
-      <div className="mt-4 rounded-2xl bg-white/65 p-3">
-        <p className="text-xs font-black uppercase tracking-[0.12em] text-[#8e8e93]">
-          Add to calendar
-        </p>
 
+      <div className="mt-4 grid gap-2 sm:grid-cols-[1fr_auto_auto]">
         {nonSharedCalendars.length === 0 ? (
-          <p className="mt-2 text-sm font-bold text-[#ff3b30]">
+          <p className="rounded-2xl bg-[#ffe8e6] px-3 py-2 text-sm font-bold text-[#ff3b30] sm:col-span-3">
             Create a personal non-shared calendar first.
           </p>
         ) : (
           <select
             value={selectedCalendarId}
             onChange={(event) => onCalendarChange(event.target.value)}
-            className="mt-2 h-10 w-full rounded-2xl bg-white/85 px-3 text-sm font-bold outline-none"
+            className="h-10 min-w-0 rounded-2xl border border-black/5 bg-white/85 px-3 text-sm font-bold text-[#1d1d1f] outline-none dark:border-white/10 dark:bg-white/10 dark:text-white"
           >
             {nonSharedCalendars.map((calendar) => (
               <option key={calendar.id} value={calendar.id}>
@@ -6401,22 +6483,22 @@ function EventInviteCard({
             ))}
           </select>
         )}
-      </div>
-      <div className="mt-4 grid grid-cols-2 gap-2">
+
         <button
           type="button"
           onClick={() => onResponse(invitation.id, "decline")}
-          className="h-10 rounded-full bg-white/80 px-4 text-sm font-black text-[#ff3b30] transition active:scale-95"
+          className="h-10 rounded-2xl bg-rose-50 px-4 text-sm font-black text-rose-600 transition hover:bg-rose-100 active:scale-95 dark:bg-rose-500/15 dark:text-rose-200 dark:hover:bg-rose-500/25"
         >
           Decline
         </button>
+
         <button
           type="button"
           onClick={() => onResponse(invitation.id, "accept")}
           disabled={nonSharedCalendars.length === 0}
-          className="h-10 rounded-full bg-[#af52de] px-4 text-sm font-black text-white transition active:scale-95 disabled:opacity-45"
+          className="h-10 rounded-2xl bg-[#af52de] px-4 text-sm font-black text-white shadow-sm shadow-[#af52de]/20 transition hover:bg-[#9b45cf] active:scale-95 disabled:opacity-45"
         >
-          Add to calendar
+          Add
         </button>
       </div>
     </article>

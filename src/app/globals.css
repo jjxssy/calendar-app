@@ -965,6 +965,49 @@ html[data-theme="dark"] button[class*="bg-purple-"]:not(:disabled):hover {
   color: #ffffff !important;
 }
 
+/* Arcgenda design reset: Apple-like neutral event cards */
+.event-card-shell {
+  background: rgba(255, 255, 255, 0.9) !important;
+  color: #1d1d1f;
+}
+
+.dark .event-card-shell {
+  background: rgba(36, 36, 49, 0.88) !important;
+  color: #f5f5f7;
+}
+
+.event-card-shell h4 {
+  color: #1d1d1f !important;
+}
+
+.dark .event-card-shell h4 {
+  color: #ffffff !important;
+}
+
+.event-card-shell p {
+  color: #5f5f68 !important;
+}
+
+.dark .event-card-shell p {
+  color: #d4d4d8 !important;
+}
+
+.event-card-shell .rounded-3xl {
+  background: rgba(255, 255, 255, 0.74) !important;
+  border-color: rgba(0, 0, 0, 0.055);
+}
+
+.dark .event-card-shell .rounded-3xl {
+  background: rgba(255, 255, 255, 0.08) !important;
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
+/* Do not let old fixes turn all pills dark/muddy */
+.event-card-shell button.bg-\[\#007aff\],
+.event-card-shell button.bg-\[\#af52de\] {
+  color: white !important;
+}
+
 /* ---------- Accessibility: respect reduced motion ---------- */
 @media (prefers-reduced-motion: reduce) {
   button,

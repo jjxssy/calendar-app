@@ -72,7 +72,7 @@ export async function POST(
       throw new ApiError("Role must be editor or viewer.");
     }
 
-    const event = await requireEventSharingAccess(eventId, user.id);
+    await requireEventSharingAccess(eventId, user.id);
 
     const targetUser = await prisma.user.findUnique({
       where: { email },
@@ -143,7 +143,16 @@ export async function POST(
       },
     });
 
-    return ok({ share });
+    return ok({
+      share: {
+        id: share.id,
+        email: share.email,
+        displayName: targetUser.name,
+        user: targetUser,
+        role: share.role,
+        status: share.status,
+      },
+    });
   } catch (error) {
     return fail(error);
   }

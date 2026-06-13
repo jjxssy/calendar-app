@@ -45,8 +45,9 @@ export type CalendarEvent = {
   sharedWith?: Array<{
     id: string;
     email: string;
+    displayName?: string;
     role: "editor" | "viewer";
-    status: "pending" | "accepted" | "declined";
+    status: "pending" | "accepted" | "declined" | "revoked";
   }>;
   activity?: Array<{ id: string; text: string; at: string }>;
   rescheduleReminders: RescheduleReminder[];
